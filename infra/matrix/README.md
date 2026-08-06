@@ -48,6 +48,16 @@ powershell -ExecutionPolicy Bypass -File .\infra\matrix\set-access-code.ps1
 
 Skrypt poprosi o nowy kod w niewidocznym polu. Kod nie pojawi się w historii poleceń i zacznie działać od razu dla nowych rejestracji. Zmiana nie wpływa na istniejące konta ani ich PIN-y. Jawna wartość znajduje się wyłącznie w ignorowanym przez Git pliku `infra/matrix/data/registration-access-code` na komputerze z serwerem.
 
+### Zmiana kluczy po przypadkowym ujawnieniu
+
+Jeżeli katalog danych serwera został omyłkowo wysłany do publicznego repozytorium, uruchom w katalogu projektu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\infra\matrix\rotate-exposed-secrets.ps1
+```
+
+Skrypt tworzy lokalną kopię bezpieczeństwa, zmienia sekrety rejestracji i sesji, kod dostępu, klucz podpisujący serwera oraz klucz powiadomień, a następnie sprawdza ponowne uruchomienie usług. Nie usuwa kont, wiadomości ani załączników. Kopia oraz nowe sekrety pozostają wyłącznie w ignorowanym katalogu `infra/matrix/data/`. Po zmianie klucza powiadomień trzeba ponownie włączyć powiadomienia na każdym telefonie.
+
 ## 2. Stały tunel HTTPS Cloudflare
 
 W skonfigurowanym środowisku tunel `eprom-serwer` działa jako automatyczna usługa Windows i udostępnia serwer pod stałym adresem:
