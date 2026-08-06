@@ -1,0 +1,9 @@
+{
+  "name": "eprom-web-push-gateway",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}

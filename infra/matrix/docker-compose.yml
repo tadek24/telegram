@@ -1,0 +1,52 @@
+services:
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: eprom-test-synapse
+    restart: unless-stopped
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    volumes:
+      - ./data:/data
+
+  registration-helper:
+    image: node:22-alpine
+    container_name: eprom-test-registration
+    restart: unless-stopped
+    command: ["node", "/app/registration-helper.mjs"]
+    environment:
+      SYNAPSE_URL: http://synapse:8008
+      REGISTRATION_SHARED_SECRET_FILE: /data/registration-helper-secret
+      REGISTRATION_ACCESS_CODE_FILE: /data/registration-access-code
+    volumes:
+      - ./registration-helper.mjs:/app/registration-helper.mjs:ro
+      - ./data:/data:ro
+    depends_on:
+      - synapse
+
+  push-gateway:
+    build:
+      context: ./push-gateway
+    container_name: eprom-test-push
+    restart: unless-stopped
+    environment:
+      SYNAPSE_URL: http://synapse:8008
+      PUSH_SUBSCRIPTIONS_FILE: /data/web-push-subscriptions.json
+      VAPID_KEYS_FILE: /data/web-push-vapid.json
+      VAPID_SUBJECT: mailto:push@webspanner.pl
+    volumes:
+      - ./data:/data
+    depends_on:
+      - synapse
+
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: eprom-test-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8008:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - synapse
+      - registration-helper
+      - push-gateway
