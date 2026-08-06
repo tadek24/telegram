@@ -35,6 +35,9 @@ services:
       VAPID_SUBJECT: mailto:push@webspanner.pl
     volumes:
       - ./data:/data
+    networks:
+      default:
+        ipv4_address: 172.30.55.3
     depends_on:
       - synapse
 
@@ -50,3 +53,10 @@ services:
       - synapse
       - registration-helper
       - push-gateway
+
+networks:
+  default:
+    name: eprom-test-network
+    ipam:
+      config:
+        - subnet: 172.30.55.0/29

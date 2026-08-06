@@ -139,6 +139,8 @@ async function notify(request, response) {
   if (eventId) recentEvents.set(eventId, Date.now())
 
   const rejected = []
+  let delivered = 0
+  let failed = 0
   let changed = false
   for (const device of notification.devices) {
     const pushKey = typeof device.pushkey === 'string' ? device.pushkey : ''
@@ -151,6 +153,7 @@ async function notify(request, response) {
         tag: eventId || `eprom-${Date.now()}`,
         data: { url: '/' },
       }), { TTL: 3600, urgency: 'high' })
+      delivered += 1
     } catch (error) {
       const statusCode = Number(error?.statusCode || 0)
       if (statusCode === 404 || statusCode === 410) {
@@ -158,11 +161,13 @@ async function notify(request, response) {
         rejected.push(pushKey)
         changed = true
       } else {
+        failed += 1
         console.error(`Nie udało się dostarczyć powiadomienia (${statusCode || 'brak kodu'}).`)
       }
     }
   }
   if (changed) await persistSubscriptions()
+  console.log(`Powiadomienia: wyslano ${delivered}, odrzucono ${rejected.length}, bledy ${failed}.`)
   reply(response, 200, { rejected })
 }
 

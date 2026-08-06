@@ -58,6 +58,7 @@ try {
   $config = Set-YamlValue $config 'allow_public_rooms_over_federation' 'false'
   $config = Set-YamlValue $config 'enable_room_list_search' 'false'
   $config = Set-YamlValue $config 'federation_domain_whitelist' '[]'
+  $config = Set-YamlValue $config 'ip_range_whitelist' "['172.30.55.3/32']"
   $config = Set-YamlSectionValue $config 'push' 'include_content' 'false'
   $config = [regex]::Replace($config, '(?m)^[ \t]*-[ \t]*federation[ \t]*\r?\n?', '')
   Write-Utf8NoBom $configPath $config
@@ -106,7 +107,7 @@ try {
 
   Write-Host "`nSerwer dziala lokalnie pod adresem http://127.0.0.1:8008."
   Write-Host 'Konto zostanie utworzone automatycznie przy pierwszym logowaniu numerem i wlasnym PIN-em (minimum 8 znakow).'
-  Write-Host "Kod dostepu dla zaufanych osob: $accessCode"
+  Write-Host 'Kod dostepu znajduje sie tylko w lokalnym pliku infra\matrix\data\registration-access-code.'
   Write-Host 'Dalsze kroki (tunel HTTPS i zmienne Vercel) opisuje infra/matrix/README.md.'
 } finally {
   Pop-Location

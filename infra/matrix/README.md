@@ -18,7 +18,7 @@ W katalogu projektu uruchom:
 powershell -ExecutionPolicy Bypass -File .\infra\matrix\setup-test-server.ps1
 ```
 
-Skrypt nie pyta o numery ani PIN-y. Generuje natomiast losowy kod dostępu dla zaufanych osób i pokazuje go w terminalu po uruchomieniu. Numer jest normalizowany do cyfr i wewnętrznie mapowany na konto `phone_<cyfry>` dopiero podczas pierwszego logowania. Użytkownik podaje wtedy kod dostępu oraz sam ustala PIN lub hasło mające co najmniej 8 znaków. Przy kolejnych logowaniach do istniejącego konta używa już numeru i własnego PIN-u, bez kodu dostępu. PIN nie jest zapisywany przez aplikację ani usługę rejestracji.
+Skrypt nie pyta o numery ani PIN-y. Generuje natomiast losowy kod dostępu dla zaufanych osób i zapisuje go wyłącznie w lokalnym pliku `infra/matrix/data/registration-access-code`. Numer jest normalizowany do cyfr i wewnętrznie mapowany na konto `phone_<cyfry>` dopiero podczas pierwszego logowania. Użytkownik podaje wtedy kod dostępu oraz sam ustala PIN lub hasło mające co najmniej 8 znaków. Przy kolejnych logowaniach do istniejącego konta używa już numeru i własnego PIN-u, bez kodu dostępu. PIN nie jest zapisywany przez aplikację ani usługę rejestracji.
 
 W tej wersji testowej lista numerów nie jest ograniczona. Kod dostępu blokuje samodzielne tworzenie kont przez osoby spoza testu, ale nie weryfikuje własności numeru. Zaufana osoba znająca kod nadal może jako pierwsza zająć dowolny numer, dlatego rozwiązanie nadaje się wyłącznie do zamkniętych testów. Kodu dostępu ani PIN-u nie wolno umieszczać w adresie URL — taki sekret wycieka do historii przeglądarki, logów i udostępnianych linków.
 
@@ -31,6 +31,8 @@ docker compose -f .\infra\matrix\docker-compose.yml up -d
 ```
 
 Pierwsze uruchomienie po dodaniu powiadomień może potrwać chwilę dłużej, ponieważ Docker buduje małą prywatną bramkę powiadomień. Jej klucze i przypisania telefonów są zapisywane wyłącznie w ignorowanym katalogu `infra/matrix/data/`. Serwer nie wkłada treści zaszyfrowanej wiadomości do powiadomienia.
+
+Bramka powiadomień ma stały adres wyłącznie w prywatnej sieci Dockera. Konfiguracja serwera dopuszcza połączenia tylko do tego jednego adresu, dzięki czemu Synapse może przekazać sygnał o nowej wiadomości bez otwierania dostępu do pozostałych prywatnych adresów komputera.
 
 Zatrzymanie bez usuwania danych:
 
