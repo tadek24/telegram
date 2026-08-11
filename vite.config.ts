@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  cacheDir: '.cache/vite',
   plugins: [
     react(),
     VitePWA({
@@ -13,8 +14,8 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
       },
       manifest: {
-        name: 'Komunikatr E-Prom',
-        short_name: 'E-Prom',
+        name: 'Komunikator',
+        short_name: 'Komunikator',
         lang: 'pl',
         description: 'Prywatny komunikator mobilny do bezpiecznych rozmów',
         theme_color: '#703a08',

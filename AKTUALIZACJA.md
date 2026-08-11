@@ -1,4 +1,4 @@
-# Komunikatr E-Prom — bezpłatna wersja testowa
+# Komunikator — wersja testowa
 
 ## Co zostało dodane
 

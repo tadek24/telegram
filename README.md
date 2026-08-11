@@ -10,6 +10,14 @@ Ten tryb nie synchronizuje danych pomiędzy telefonami. Służy do bezpłatnych 
 
 Kontakty i rozmowy widoczne w demonstracji są wyłącznie lokalnymi danymi przykładowymi. Nie oznaczają kont istniejących na serwerze i nie można przez nie kontaktować się z innym telefonem.
 
+## Import archiwum z Telegrama
+
+W lewym menu znajduje się pozycja **Archiwum Telegrama**. Użytkownik może w Telegram Desktop wyeksportować rozmowy w formacie JSON, a następnie wskazać plik `result.json` w komunikatorze. Import jest jednokierunkowy i służy wyłącznie do odczytu: aplikacja nie loguje się do Telegrama, nie wysyła do niego danych i nie pozwala Telegramowi pobierać nowych rozmów.
+
+Plik jest analizowany w osobnym Web Workerze i zapisywany w IndexedDB tylko na bieżącym urządzeniu, osobno dla każdego konta. Import przyjmuje pliki JSON do 100 MB, ogranicza liczbę i długość przetwarzanych elementów oraz nigdy nie renderuje treści jako HTML. Zdjęcia i inne media nie są zawarte w samym pliku JSON — obecna wersja pokazuje ich bezpieczne odwołania z eksportu, ale nie przesyła plików multimedialnych na serwer.
+
+Rozmowy komunikatora można archiwizować pojedynczo albo hurtowo. Tryb zaznaczania pozwala także przywrócić rozmowy z archiwum lub usunąć wiele z nich ze swojego konta. Usunięcie nie kasuje kopii należących do innych uczestników.
+
 ## Test prawdziwej rozmowy telefon + PIN
 
 Flaga `VITE_ENABLE_PHONE_MATRIX_LOGIN=true` włącza prosty formularz numeru telefonu i PIN-u. Numer jest normalizowany do cyfr i wewnętrznie mapowany na bezpieczną nazwę `phone_<cyfry>`. Techniczne identyfikatory i adresy nie są prezentowane użytkownikowi. PIN służy wyłącznie do bieżącego żądania logowania i nie jest zapisywany w `localStorage` ani IndexedDB.
