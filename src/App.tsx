@@ -6,6 +6,13 @@ import { authConfig, getProductionConfigError } from './matrix/config'
 import { phoneToUserId } from './matrix/phone-identity'
 import { readLocalAccount, saveLocalAccount } from './demo/storage'
 import {
+  importTelegramJson,
+  mergeTelegramArchives,
+  readTelegramArchive,
+  saveTelegramArchive,
+  type TelegramArchiveChat,
+} from './telegram-archive'
+import {
   browserHasPushSubscription,
   disablePushNotifications,
   enablePushNotifications,
@@ -30,11 +37,12 @@ import {
 } from './matrix/client'
 
 type AppStatus = 'restoring' | 'logged-out' | 'syncing' | 'ready' | 'offline' | 'demo'
-type IconName = 'search' | 'chat' | 'contacts' | 'files' | 'history' | 'settings' | 'logout' | 'send' | 'plus' | 'menu' | 'close' | 'lock' | 'attach' | 'camera' | 'image' | 'file'
+type IconName = 'search' | 'chat' | 'contacts' | 'files' | 'history' | 'archive' | 'trash' | 'check' | 'download' | 'settings' | 'logout' | 'send' | 'plus' | 'menu' | 'close' | 'lock' | 'attach' | 'camera' | 'image' | 'file'
 type ChatTheme = 'system' | 'light' | 'dark' | 'blue'
+type WorkspaceView = 'chats' | 'archived' | 'telegram'
 type ServerContact = { id: string, name: string, phone: string, avatar?: string, roomId?: string }
 type ServerProfile = { name: string, about: string, avatar?: string }
-type ServerLocalSettings = { version: 1, contacts: ServerContact[], about: string, theme: ChatTheme, pushKey?: string }
+type ServerLocalSettings = { version: 1, contacts: ServerContact[], about: string, theme: ChatTheme, pushKey?: string, archivedRoomIds?: string[] }
 type GroupInviteState = { active?: boolean, code?: string, alias?: string }
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -73,6 +81,10 @@ function Icon({ name }: { name: IconName }) {
     contacts: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></>,
     files: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></>,
     history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></>,
+    archive: <><path d="M4 7h16v13H4z"/><path d="M3 3h18v4H3zM9 11h6"/></>,
+    trash: <><path d="M3 6h18M8 6V3h8v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></>,
+    check: <path d="m5 12 4 4L19 6"/>,
+    download: <><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></>,
     settings: <><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.5 1a7 7 0 0 0-1.8-1L14.2 3h-4.4l-.4 3a7 7 0 0 0-1.8 1L5 6 3 9.4 5.1 11a7 7 0 0 0 0 2L3 14.6 5 18l2.6-1a7 7 0 0 0 1.8 1l.4 3h4.4l.4-3a7 7 0 0 0 1.8-1l2.6 1 2-3.4-2.1-1.6a7 7 0 0 0 .1-1Z"/></>,
     logout: <><path d="M10 17l5-5-5-5M15 12H3M21 19V5a2 2 0 0 0-2-2h-6"/></>,
     send: <><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></>,
@@ -108,12 +120,12 @@ function InstallGuideArt({ platform }: { platform: 'android' | 'ios' }) {
       <span className="install-speaker" />
       <div className="install-browser-bar">
         <span className="browser-dot red" /><span className="browser-dot yellow" /><span className="browser-dot green" />
-        <span className="browser-address">eprom</span>
+        <span className="browser-address">komunikator</span>
         <b>{platform === 'android' ? '⋮' : '↑'}</b>
       </div>
       <div className="install-app-preview">
         <span className="install-app-icon"><BrandIcon /></span>
-        <strong>Komunikator<br />E-Prom</strong>
+        <strong>Komunikator</strong>
       </div>
       <div className="install-menu-preview">
         <span>{platform === 'android' ? '＋' : '□↑'}</span>
@@ -412,7 +424,7 @@ function Login({ initialError = '', onDemoLogin, onAuthenticated }: { initialErr
     installUrl.searchParams.set('install', '1')
     try {
       if (navigator.share) {
-        await navigator.share({ title: 'Komunikator E-Prom', text: 'Otwórz link i zainstaluj komunikator E-Prom na telefonie.', url: installUrl.toString() })
+        await navigator.share({ title: 'Komunikator', text: 'Otwórz link i dodaj Komunikator do ekranu telefonu.', url: installUrl.toString() })
         setInstallShareStatus('Link udostępniony')
       } else {
         await navigator.clipboard.writeText(installUrl.toString())
@@ -508,6 +520,110 @@ function Login({ initialError = '', onDemoLogin, onAuthenticated }: { initialErr
   </main>
 }
 
+function telegramImportError(reason: unknown) {
+  const code = reason instanceof Error ? reason.message : ''
+  if (code === 'TELEGRAM_JSON_REQUIRED') return 'Wybierz plik result.json wyeksportowany z Telegram Desktop.'
+  if (code === 'TELEGRAM_JSON_EMPTY') return 'Wybrany plik jest pusty.'
+  if (code === 'TELEGRAM_JSON_TOO_LARGE') return 'Plik JSON może mieć maksymalnie 100 MB. Wyeksportuj mniej rozmów i spróbuj ponownie.'
+  if (code === 'TELEGRAM_JSON_INVALID') return 'To nie jest prawidłowy eksport JSON z Telegrama.'
+  if (code === 'TELEGRAM_EXPORT_TOO_MANY_MESSAGES') return 'Eksport zawiera ponad 500 000 wiadomości. Podziel go na mniejsze części.'
+  if (code === 'TELEGRAM_IMPORT_TIMEOUT') return 'Import trwał zbyt długo. Spróbuj z mniejszym plikiem.'
+  return 'Nie udało się zaimportować archiwum. Sprawdź plik i spróbuj ponownie.'
+}
+
+function formatArchiveTimestamp(timestamp: number) {
+  if (!timestamp) return 'brak daty'
+  return new Intl.DateTimeFormat('pl', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
+}
+
+function TelegramArchiveWorkspace({ ownerId, onOpenMenu, onNewConversation }: { ownerId: string, onOpenMenu: () => void, onNewConversation: () => void }) {
+  const [chats, setChats] = useState<TelegramArchiveChat[]>([])
+  const [activeChatId, setActiveChatId] = useState('')
+  const [search, setSearch] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const [visibleLimit, setVisibleLimit] = useState(200)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const activeChat = chats.find(chat => chat.id === activeChatId)
+  const visibleChats = useMemo(() => chats.filter(chat => chat.name.toLowerCase().includes(search.toLowerCase())), [chats, search])
+  const visibleMessages = activeChat ? activeChat.messages.slice(-visibleLimit) : []
+
+  useEffect(() => {
+    let active = true
+    setActiveChatId('')
+    setNotice('')
+    setError('')
+    void readTelegramArchive(ownerId).then(stored => { if (active) setChats(stored) }).catch(() => {
+      if (active) setError('Nie udało się otworzyć lokalnego archiwum.')
+    })
+    return () => { active = false }
+  }, [ownerId])
+
+  async function importFile(file: File) {
+    setBusy(true); setError(''); setNotice('Analizujemy eksport poza głównym interfejsem…')
+    try {
+      const result = await importTelegramJson(file)
+      if (result.chats.length === 0) throw new Error('TELEGRAM_JSON_INVALID')
+      const nextChats = mergeTelegramArchives(chats, result.chats)
+      await saveTelegramArchive(ownerId, nextChats)
+      setChats(nextChats)
+      setActiveChatId(result.chats[0]?.id ?? '')
+      setVisibleLimit(200)
+      setNotice(`Zaimportowano ${result.chats.length} rozmów i ${result.messageCount.toLocaleString('pl')} wiadomości. Dane pozostały na tym urządzeniu.`)
+    } catch (reason) { setNotice(''); setError(telegramImportError(reason)) }
+    finally { setBusy(false) }
+  }
+
+  async function deleteImportedChat(chat: TelegramArchiveChat) {
+    if (!window.confirm(`Usunąć lokalne archiwum rozmowy „${chat.name}”? Nie wpłynie to na dane w Telegramie.`)) return
+    const nextChats = chats.filter(item => item.id !== chat.id)
+    try {
+      await saveTelegramArchive(ownerId, nextChats)
+      setChats(nextChats)
+      setActiveChatId('')
+      setNotice('Archiwum rozmowy zostało usunięte z tego urządzenia.')
+    } catch { setError('Nie udało się usunąć lokalnego archiwum.') }
+  }
+
+  return <>
+    <section className="rooms-panel telegram-rooms-panel">
+      <header className="rooms-header">
+        <button className="mobile-logo" onClick={onOpenMenu} aria-label="Otwórz menu"><BrandIcon /></button>
+        <div><span>Prywatne archiwum</span><h1>Telegram</h1></div>
+        <button className="new-chat-button telegram-import-button" type="button" disabled={busy} onClick={() => fileInput.current?.click()} aria-label="Importuj plik JSON"><Icon name="download"/></button>
+        <input ref={fileInput} className="hidden-file-input" type="file" accept="application/json,.json" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(file) }}/>
+      </header>
+      <label className="search"><Icon name="search"/><span className="sr-only">Szukaj w archiwum Telegrama</span><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Szukaj archiwum"/></label>
+      <section className="telegram-local-note"><Icon name="lock"/><span><strong>Tylko na tym urządzeniu</strong><small>Plik JSON nie jest wysyłany na Telegram ani na serwer komunikatora.</small></span></section>
+      {notice && <p className="success-banner telegram-import-notice" role="status">{notice}</p>}
+      {error && <p className="error-banner compact" role="alert">{error}<button onClick={() => setError('')} aria-label="Zamknij"><Icon name="close"/></button></p>}
+      <div className="rooms-scroll">
+        <h2 className="list-title">Zaimportowane rozmowy <span>{visibleChats.length}</span></h2>
+        <div className="room-list telegram-room-list">{visibleChats.map(chat => {
+          const last = chat.messages.at(-1)
+          return <button key={chat.id} className={chat.id === activeChatId ? 'active' : ''} onClick={() => { setActiveChatId(chat.id); setVisibleLimit(200) }}><span className="room-avatar telegram-avatar">T</span><span><strong>{chat.name}</strong><small>{last?.text || last?.media?.name || 'Archiwum Telegrama'}</small></span><time>{last?.timestamp ? new Intl.DateTimeFormat('pl', { day: '2-digit', month: '2-digit' }).format(last.timestamp) : ''}</time></button>
+        })}</div>
+        {!busy && visibleChats.length === 0 && <div className="empty-list telegram-empty"><Icon name="history"/><p>Nie ma jeszcze archiwum. W Telegram Desktop wyeksportuj dane jako JSON, a następnie wybierz plik <strong>result.json</strong>.</p><button type="button" onClick={() => fileInput.current?.click()}>Wybierz plik JSON</button></div>}
+        {busy && <div className="rooms-loading" role="status"><span className="spinner"/><p>Bezpiecznie analizujemy archiwum…</p></div>}
+      </div>
+    </section>
+
+    <section className={`chat-panel telegram-chat-panel ${activeChat ? 'mobile-active' : ''}`}>
+      {activeChat ? <>
+        <header className="chat-header"><button className="back-button" onClick={() => setActiveChatId('')} aria-label="Wróć do archiwum">‹</button><span className="room-avatar telegram-avatar">T</span><div><strong>{activeChat.name}</strong><small><Icon name="archive"/> Import z Telegrama · tylko do odczytu</small></div><button className="chat-settings-button danger-icon-button" type="button" onClick={() => void deleteImportedChat(activeChat)} aria-label="Usuń import tej rozmowy"><Icon name="trash"/></button></header>
+        <div className="timeline telegram-timeline">
+          {activeChat.messages.length > visibleMessages.length && <button className="load-older-button" type="button" onClick={() => setVisibleLimit(limit => limit + 200)}>Pokaż 200 starszych wiadomości</button>}
+          <p className="archive-divider"><span>Archiwum Telegrama · {activeChat.messages.length.toLocaleString('pl')} wiadomości</span></p>
+          {visibleMessages.map(message => <article className={`message imported-message ${message.own ? 'own' : ''}`} key={message.id}><strong>{message.own ? 'Ty' : message.author}</strong>{message.media && <span className="imported-media"><Icon name={message.media.kind === 'photo' ? 'image' : message.media.kind === 'audio' ? 'files' : 'file'}/><span><b>{message.media.name}</b><small>Plik wskazany w eksporcie JSON</small></span></span>}{message.text && <p>{message.text}</p>}<time>{formatArchiveTimestamp(message.timestamp)}</time></article>)}
+          <p className="archive-divider current"><span>Koniec zaimportowanej historii</span></p>
+        </div>
+        <footer className="archive-readonly-bar"><span><Icon name="lock"/><span><strong>Archiwum jest tylko do odczytu</strong><small>Nowe wiadomości są wysyłane wyłącznie przez Komunikator.</small></span></span><button type="button" onClick={onNewConversation}><Icon name="plus"/>Nowa rozmowa</button></footer>
+      </> : <div className="chat-placeholder telegram-placeholder"><span><Icon name="history"/></span><h2>Archiwum z Telegrama</h2><p>Importuj plik JSON i wracaj do dawnych wiadomości bez łączenia Telegrama z Komunikatorem.</p><button type="button" onClick={() => fileInput.current?.click()}><Icon name="download"/>Importuj archiwum</button></div>}
+    </section>
+  </>
+}
+
 export default function App() {
   const [status, setStatus] = useState<AppStatus>('restoring')
   const [demoPhone, setDemoPhone] = useState(() => sessionStorage.getItem(DEMO_SESSION_KEY) ?? '')
@@ -550,6 +666,10 @@ export default function App() {
   const [roomSettingsSaved, setRoomSettingsSaved] = useState('')
   const [historyDialog, setHistoryDialog] = useState(false)
   const [filesDialog, setFilesDialog] = useState(false)
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('chats')
+  const [archivedRoomIds, setArchivedRoomIds] = useState<string[]>([])
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([])
   const [theme, setTheme] = useState<ChatTheme>('system')
   const [pushKey, setPushKey] = useState('')
   const [pushBusy, setPushBusy] = useState(false)
@@ -619,6 +739,7 @@ export default function App() {
       if (local?.version === 1) {
         setContacts(local.contacts)
         setTheme(local.theme)
+        setArchivedRoomIds(Array.isArray(local.archivedRoomIds) ? local.archivedRoomIds : [])
         const savedPushKey = local.pushKey || ''
         if (savedPushKey && pushPermission() === 'granted') {
           setPushKey(savedPushKey)
@@ -633,10 +754,10 @@ export default function App() {
     const userId = client?.getUserId()
     if (!userId || !settingsHydrated) return
     const timer = window.setTimeout(() => {
-      void saveLocalAccount<ServerLocalSettings>(userId, { version: 1, contacts, about: profile.about, theme, pushKey })
+      void saveLocalAccount<ServerLocalSettings>(userId, { version: 1, contacts, about: profile.about, theme, pushKey, archivedRoomIds })
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [client, contacts, profile.about, pushKey, settingsHydrated, theme])
+  }, [archivedRoomIds, client, contacts, profile.about, pushKey, settingsHydrated, theme])
 
   useEffect(() => {
     if (!client) return
@@ -775,8 +896,10 @@ export default function App() {
   const displayRoomName = (room: Room) => contactForRoom(room)?.name ?? safeRoomName(room)
   const visibleRooms = useMemo(() => rooms.filter(room => {
     const contact = contacts.find(item => item.roomId === room.roomId)
-    return (contact?.name ?? safeRoomName(room)).toLowerCase().includes(search.toLowerCase())
-  }), [contacts, rooms, search])
+    const matchesSearch = (contact?.name ?? safeRoomName(room)).toLowerCase().includes(search.toLowerCase())
+    const isArchived = archivedRoomIds.includes(room.roomId)
+    return matchesSearch && (workspaceView === 'archived' ? isArchived : !isArchived)
+  }), [archivedRoomIds, contacts, rooms, search, workspaceView])
   const allJoinedRooms = rooms.filter(room => room.getMyMembership() === 'join')
   const joinedRooms = visibleRooms.filter(room => room.getMyMembership() === 'join')
   const invitedRooms = visibleRooms.filter(room => room.getMyMembership() === 'invite')
@@ -997,7 +1120,7 @@ export default function App() {
   async function shareGroupCode() {
     if (!roomSettingsCode) return
     if (navigator.share) {
-      try { await navigator.share({ title: roomSettingsName || 'Zaproszenie do grupy', text: `Kod dołączenia do grupy E-Prom: ${roomSettingsCode}` }); return }
+      try { await navigator.share({ title: roomSettingsName || 'Zaproszenie do grupy', text: `Kod dołączenia do grupy w Komunikatorze: ${roomSettingsCode}` }); return }
       catch { return }
     }
     await copyGroupCode()
@@ -1016,6 +1139,7 @@ export default function App() {
       await client.leave(roomId)
       await client.forget(roomId, true)
       setContacts(current => current.map(contact => contact.roomId === roomId ? { ...contact, roomId: undefined } : contact))
+      setArchivedRoomIds(current => current.filter(id => id !== roomId))
       setRoomSettingsDialog(false)
       setActiveRoomId('')
     } catch (reason) { setError(friendlyError(reason)) }
@@ -1030,6 +1154,66 @@ export default function App() {
       else await client.leave(room.roomId)
     } catch (reason) { setError(friendlyError(reason)) }
     finally { setBusy(false) }
+  }
+
+  function openWorkspaceView(view: WorkspaceView) {
+    setWorkspaceView(view)
+    setActiveRoomId('')
+    setSelectionMode(false)
+    setSelectedRoomIds([])
+    setSearch('')
+    setDrawer(false)
+  }
+
+  function toggleRoomSelection(roomId: string) {
+    setSelectedRoomIds(current => current.includes(roomId) ? current.filter(id => id !== roomId) : [...current, roomId])
+  }
+
+  function archiveSelectedRooms() {
+    if (selectedRoomIds.length === 0) return
+    setArchivedRoomIds(current => [...new Set([...current, ...selectedRoomIds])])
+    if (selectedRoomIds.includes(activeRoomId)) setActiveRoomId('')
+    setSelectedRoomIds([])
+    setSelectionMode(false)
+  }
+
+  function restoreSelectedRooms() {
+    if (selectedRoomIds.length === 0) return
+    setArchivedRoomIds(current => current.filter(id => !selectedRoomIds.includes(id)))
+    setSelectedRoomIds([])
+    setSelectionMode(false)
+  }
+
+  function toggleActiveRoomArchive() {
+    if (!activeRoom) return
+    const roomId = activeRoom.roomId
+    const archived = archivedRoomIds.includes(roomId)
+    setArchivedRoomIds(current => archived ? current.filter(id => id !== roomId) : [...new Set([...current, roomId])])
+    setRoomSettingsDialog(false)
+    setActiveRoomId('')
+    if (archived) setWorkspaceView('chats')
+  }
+
+  async function deleteSelectedConversations() {
+    if (!client || selectedRoomIds.length === 0) return
+    const selectedCount = selectedRoomIds.length
+    if (!window.confirm(`Usunąć ${selectedCount} zaznaczonych rozmów ze swojego konta? Pozostali uczestnicy zachowają swoje kopie.`)) return
+    setBusy(true); setError('')
+    const failed: string[] = []
+    for (const roomId of selectedRoomIds) {
+      try {
+        await client.leave(roomId)
+        await client.forget(roomId, true)
+      } catch { failed.push(roomId) }
+    }
+    const removed = selectedRoomIds.filter(roomId => !failed.includes(roomId))
+    setContacts(current => current.map(contact => contact.roomId && removed.includes(contact.roomId) ? { ...contact, roomId: undefined } : contact))
+    setArchivedRoomIds(current => current.filter(roomId => !removed.includes(roomId)))
+    if (removed.includes(activeRoomId)) setActiveRoomId('')
+    setSelectedRoomIds(failed)
+    setSelectionMode(failed.length > 0)
+    if (failed.length > 0) setError(`Usunięto ${removed.length} rozmów. ${failed.length} nie udało się usunąć — spróbuj ponownie.`)
+    setBusy(false)
   }
 
   function resetServerContactForm() {
@@ -1173,16 +1357,19 @@ export default function App() {
     {drawer && <button className="drawer-scrim" aria-label="Zamknij menu" onClick={() => setDrawer(false)} />}
     <aside className={`sidebar ${drawer ? 'open' : ''}`}>
       <header className="sidebar-brand">
-        <span className="brand-mark small"><BrandIcon /></span><strong>Komunikatr E-Prom</strong>
+        <span className="brand-mark small"><BrandIcon /></span><strong>Komunikator</strong>
         <button className="icon-button close-drawer" onClick={() => setDrawer(false)} aria-label="Zamknij menu"><Icon name="close"/></button>
       </header>
       <button className="user-card user-card-button" onClick={openServerAccountSettings}><ServerAvatar name={profile.name} source={profile.avatar} client={client} className="user-avatar"/><div><strong>{profile.name}</strong><small>{profile.about || 'Twoje konto'}</small></div></button>
       <nav className="side-nav" aria-label="Zasoby użytkownika">
-        <button className="active" onClick={() => setDrawer(false)}><Icon name="chat"/><span>Wszystkie pokoje</span><b>{allJoinedRooms.length}</b></button>
+        <span className="nav-label">Rozmowy</span>
+        <button className={workspaceView === 'chats' ? 'active' : ''} onClick={() => openWorkspaceView('chats')}><Icon name="chat"/><span>Wiadomości</span><b>{allJoinedRooms.filter(room => !archivedRoomIds.includes(room.roomId)).length}</b></button>
+        <button className={workspaceView === 'telegram' ? 'active telegram-nav-button' : 'telegram-nav-button'} onClick={() => openWorkspaceView('telegram')}><Icon name="history"/><span>Archiwum Telegrama</span></button>
+        <button className={workspaceView === 'archived' ? 'active' : ''} onClick={() => openWorkspaceView('archived')}><Icon name="archive"/><span>Zarchiwizowane</span><b>{allJoinedRooms.filter(room => archivedRoomIds.includes(room.roomId)).length}</b></button>
+        <span className="nav-label">Narzędzia</span>
         <button onClick={() => { setContactsDialog(true); setDrawer(false) }}><Icon name="contacts"/><span>Kontakty</span></button>
         <button onClick={() => { setFilesDialog(true); setDrawer(false) }}><Icon name="files"/><span>Pliki i media</span></button>
-        <button onClick={() => { setHistoryDialog(true); setDrawer(false) }}><Icon name="history"/><span>Historia</span></button>
-        <button onClick={openServerAccountSettings}><Icon name="settings"/><span>Ustawienia konta</span></button>
+        <button onClick={openServerAccountSettings}><Icon name="settings"/><span>Ustawienia</span></button>
       </nav>
       <div className="sidebar-bottom">
         <p><span className={`status-dot ${status === 'ready' ? 'ready' : ''}`}/><strong>{status === 'offline' ? 'Brak połączenia' : status === 'syncing' ? 'Synchronizacja…' : 'Połączono'}</strong><small>{status === 'offline' ? 'Wiadomości mogą być nieaktualne' : 'Wiadomości są aktualne'}</small></p>
@@ -1190,21 +1377,25 @@ export default function App() {
       </div>
     </aside>
 
+    {workspaceView === 'telegram' ? <TelegramArchiveWorkspace ownerId={myUserId} onOpenMenu={() => setDrawer(true)} onNewConversation={() => { openWorkspaceView('chats'); setNewChat(true) }}/> : <>
     <section className="rooms-panel">
       <header className="rooms-header">
         <button className="mobile-logo" onClick={() => setDrawer(true)} aria-label="Otwórz menu"><BrandIcon /></button>
-        <div><span>Twoje konto</span><h1>Wiadomości</h1></div>
-        <button className="new-chat-button" onClick={() => setNewChat(true)} aria-label="Nowa szyfrowana rozmowa"><Icon name="plus"/></button>
+        <div><span>{workspaceView === 'archived' ? 'Odłożone rozmowy' : 'Twoje konto'}</span><h1>{workspaceView === 'archived' ? 'Archiwum' : 'Wiadomości'}</h1></div>
+        {workspaceView === 'chats' && <button className="new-chat-button" onClick={() => setNewChat(true)} aria-label="Nowa szyfrowana rozmowa"><Icon name="plus"/></button>}
       </header>
       <label className="search"><Icon name="search"/><span className="sr-only">Szukaj pokoi</span><input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Szukaj rozmowy"/></label>
-      <div className="group-actions"><button onClick={() => setGroupDialog('create')}><Icon name="contacts"/>Utwórz grupę</button><button onClick={() => setGroupDialog('join')}><Icon name="plus"/>Dołącz do grupy</button></div>
+      {workspaceView === 'chats' && <div className="group-actions"><button onClick={() => setGroupDialog('create')}><Icon name="contacts"/>Utwórz grupę</button><button onClick={() => setGroupDialog('join')}><Icon name="plus"/>Dołącz do grupy</button></div>}
+      <div className={`selection-toolbar ${selectionMode ? 'active' : ''}`}>
+        {selectionMode ? <><strong>{selectedRoomIds.length ? `Wybrano: ${selectedRoomIds.length}` : 'Wybierz rozmowy'}</strong><span>{workspaceView === 'archived' ? <button type="button" disabled={!selectedRoomIds.length || busy} onClick={restoreSelectedRooms}><Icon name="check"/>Przywróć</button> : <button type="button" disabled={!selectedRoomIds.length || busy} onClick={archiveSelectedRooms}><Icon name="archive"/>Archiwizuj</button>}<button className="selection-delete" type="button" disabled={!selectedRoomIds.length || busy} onClick={() => void deleteSelectedConversations()}><Icon name="trash"/>Usuń</button><button type="button" onClick={() => { setSelectionMode(false); setSelectedRoomIds([]) }}>Anuluj</button></span></> : <button className="start-selection-button" type="button" disabled={!joinedRooms.length} onClick={() => setSelectionMode(true)}><Icon name="check"/>Zaznacz rozmowy</button>}
+      </div>
       {settingsHydrated && !pushKey && pushNotificationsSupported() && <section className="push-reminder" aria-label="Powiadomienia"><div><strong>Nie przegap nowej wiadomości</strong><small>Włącz bezpieczne powiadomienia na tym urządzeniu. Treść rozmowy nie pojawi się na ekranie blokady.</small></div><button type="button" disabled={pushBusy} onClick={() => void togglePushNotifications()}>{pushBusy ? 'Włączanie…' : 'Włącz'}</button>{pushNotice && <p role="status">{pushNotice}</p>}</section>}
       {error && <p className="error-banner compact" role="alert">{error}<button onClick={() => setError('')} aria-label="Zamknij"><Icon name="close"/></button></p>}
       <div className="rooms-scroll">
-        {invitedRooms.length > 0 && <section className="invites"><h2>Zaproszenia</h2>{invitedRooms.map(room => <article key={room.roomId}><RoomAvatar room={room} client={client}/><div><strong>{safeRoomName(room)}</strong><small>Zaproszenie do rozmowy</small><span><button disabled={busy} onClick={() => handleInvite(room, true)}>Dołącz</button><button disabled={busy} onClick={() => handleInvite(room, false)}>Odrzuć</button></span></div></article>)}</section>}
-        <h2 className="list-title">Rozmowy <span>{joinedRooms.length}</span></h2>
-        <div className="room-list">{joinedRooms.map(room => { const contact = contactForRoom(room); return <button key={room.roomId} className={room.roomId === activeRoomId ? 'active' : ''} onClick={() => setActiveRoomId(room.roomId)}>{contact ? <DemoAvatar name={contact.name} avatar={contact.avatar}/> : <RoomAvatar room={room} client={client}/>}<span><strong>{displayRoomName(room)}</strong><small>{lastMessage(room)}</small></span><time>{roomTimestamp(room) ? formatTime(roomTimestamp(room)) : ''}</time></button> })}</div>
-        {status === 'syncing' ? <div className="rooms-loading" role="status"><span className="spinner"/><p>Przywracamy ostatnie wiadomości…</p></div> : joinedRooms.length === 0 && <div className="empty-list"><Icon name="chat"/><p>Nie masz jeszcze żadnych pokoi.</p><button onClick={() => setNewChat(true)}>Rozpocznij rozmowę</button></div>}
+        {workspaceView === 'chats' && invitedRooms.length > 0 && <section className="invites"><h2>Zaproszenia</h2>{invitedRooms.map(room => <article key={room.roomId}><RoomAvatar room={room} client={client}/><div><strong>{safeRoomName(room)}</strong><small>Zaproszenie do rozmowy</small><span><button disabled={busy} onClick={() => handleInvite(room, true)}>Dołącz</button><button disabled={busy} onClick={() => handleInvite(room, false)}>Odrzuć</button></span></div></article>)}</section>}
+        <h2 className="list-title">{workspaceView === 'archived' ? 'Zarchiwizowane' : 'Rozmowy'} <span>{joinedRooms.length}</span></h2>
+        <div className={`room-list ${selectionMode ? 'selection-list' : ''}`}>{joinedRooms.map(room => { const contact = contactForRoom(room); const selected = selectedRoomIds.includes(room.roomId); return <button key={room.roomId} aria-pressed={selectionMode ? selected : undefined} className={`${room.roomId === activeRoomId && !selectionMode ? 'active' : ''} ${selected ? 'selected' : ''}`} onClick={() => selectionMode ? toggleRoomSelection(room.roomId) : setActiveRoomId(room.roomId)}>{selectionMode && <span className="selection-check">{selected && <Icon name="check"/>}</span>}{contact ? <DemoAvatar name={contact.name} avatar={contact.avatar}/> : <RoomAvatar room={room} client={client}/>}<span className="room-copy"><strong>{displayRoomName(room)}</strong><small>{lastMessage(room)}</small></span><time>{roomTimestamp(room) ? formatTime(roomTimestamp(room)) : ''}</time></button> })}</div>
+        {status === 'syncing' ? <div className="rooms-loading" role="status"><span className="spinner"/><p>Przywracamy ostatnie wiadomości…</p></div> : joinedRooms.length === 0 && <div className="empty-list"><Icon name={workspaceView === 'archived' ? 'archive' : 'chat'}/><p>{workspaceView === 'archived' ? 'Nie masz zarchiwizowanych rozmów.' : 'Nie masz jeszcze żadnych pokoi.'}</p>{workspaceView === 'chats' && <button onClick={() => setNewChat(true)}>Rozpocznij rozmowę</button>}</div>}
       </div>
     </section>
 
@@ -1218,12 +1409,14 @@ export default function App() {
         </form>
       </> : <div className="chat-placeholder"><span><Icon name="chat"/></span><h2>Wybierz rozmowę</h2><p>Otwórz pokój z listy lub rozpocznij nową, szyfrowaną rozmowę.</p><button onClick={() => setNewChat(true)}><Icon name="plus"/>Nowa rozmowa</button></div>}
     </section>
+    </>}
 
     {newChat && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-chat-title"><button className="icon-button modal-close" onClick={() => { setNewChat(false); setSelectedPerson(null); setPeople([]) }} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="lock"/></span><h2 id="new-chat-title">Nowa prywatna rozmowa</h2><p>{authConfig.phoneMatrixLoginEnabled ? 'Wpisz numer telefonu osoby, z którą chcesz rozpocząć chronioną rozmowę.' : 'Znajdź osobę, z którą chcesz rozpocząć chronioną rozmowę.'}</p><form onSubmit={createChat}><label>{authConfig.phoneMatrixLoginEnabled ? 'Numer telefonu' : 'Imię lub nazwa użytkownika'}<input autoFocus required type={authConfig.phoneMatrixLoginEnabled ? 'tel' : 'text'} inputMode={authConfig.phoneMatrixLoginEnabled ? 'tel' : undefined} value={selectedPerson?.name ?? invitee} onChange={e => { setInvitee(e.target.value); setSelectedPerson(null); setPeople([]) }} placeholder={authConfig.phoneMatrixLoginEnabled ? '+48 500 000 000' : 'Wpisz nazwę'}/></label>{!authConfig.phoneMatrixLoginEnabled && people.length > 0 && <div className="people-results">{people.map(person => <button type="button" key={person.userId} onClick={() => setSelectedPerson(person)}><ServerAvatar name={person.name} source={person.avatar} client={client} className="people-avatar" size={80}/><strong>{person.name}</strong></button>)}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : authConfig.phoneMatrixLoginEnabled || selectedPerson ? 'Rozpocznij rozmowę' : 'Znajdź osobę'}</button></form></section></div>}
-    {groupDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="group-dialog-title"><button className="icon-button modal-close" onClick={() => setGroupDialog(null)} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="contacts"/></span><h2 id="group-dialog-title">{groupDialog === 'create' ? 'Utwórz nową grupę' : 'Dołącz do grupy'}</h2><p>{groupDialog === 'create' ? 'Nadaj grupie czytelną nazwę. Jako jej twórca zostaniesz jedynym administratorem.' : 'Wpisz krótki kod otrzymany od administratora grupy.'}</p><form onSubmit={submitGroup}>{groupDialog === 'create' ? <label>Nazwa grupy<input autoFocus required minLength={3} maxLength={60} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="np. Zespół E-Prom"/></label> : <label>Kod grupy<input autoFocus required minLength={8} maxLength={12} autoCapitalize="characters" value={groupInvitation} onChange={event => setGroupInvitation(event.target.value.toUpperCase())} placeholder="np. 7KQF-9M2R"/></label>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : groupDialog === 'create' ? 'Utwórz grupę' : 'Dołącz do grupy'}</button></form></section></div>}
+    {groupDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="group-dialog-title"><button className="icon-button modal-close" onClick={() => setGroupDialog(null)} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="contacts"/></span><h2 id="group-dialog-title">{groupDialog === 'create' ? 'Utwórz nową grupę' : 'Dołącz do grupy'}</h2><p>{groupDialog === 'create' ? 'Nadaj grupie czytelną nazwę. Jako jej twórca zostaniesz jedynym administratorem.' : 'Wpisz krótki kod otrzymany od administratora grupy.'}</p><form onSubmit={submitGroup}>{groupDialog === 'create' ? <label>Nazwa grupy<input autoFocus required minLength={3} maxLength={60} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="np. Zespół projektu"/></label> : <label>Kod grupy<input autoFocus required minLength={8} maxLength={12} autoCapitalize="characters" value={groupInvitation} onChange={event => setGroupInvitation(event.target.value.toUpperCase())} placeholder="np. 7KQF-9M2R"/></label>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : groupDialog === 'create' ? 'Utwórz grupę' : 'Dołącz do grupy'}</button></form></section></div>}
     {roomSettingsDialog && activeRoom && <div className="modal-layer" role="presentation"><section className="modal room-settings-modal" role="dialog" aria-modal="true" aria-labelledby="room-settings-title">
       <button className="icon-button modal-close" onClick={() => setRoomSettingsDialog(false)} aria-label="Zamknij"><Icon name="close"/></button>
       <span className="modal-icon"><Icon name={activeRoomIsGroup ? 'contacts' : 'chat'}/></span><h2 id="room-settings-title">{activeRoomIsGroup ? activeRoomIsAdmin ? 'Ustawienia grupy' : 'Informacje o grupie' : 'Ustawienia rozmowy prywatnej'}</h2><p>{activeRoomIsGroup ? activeRoomIsAdmin ? 'Zarządzaj grupą, kodem dołączenia i zaproszeniami.' : 'Możesz zobaczyć członków grupy. Ustawienia zmienia wyłącznie jej administrator.' : 'Ustaw lokalną nazwę tej osoby albo usuń rozmowę ze swojej listy.'}</p>
+      <section className="archive-room-action"><Icon name="archive"/><span><strong>{archivedRoomIds.includes(activeRoom.roomId) ? 'Przywróć rozmowę' : 'Archiwizuj rozmowę'}</strong><small>{archivedRoomIds.includes(activeRoom.roomId) ? 'Rozmowa wróci na główną listę.' : 'Rozmowa trafi do archiwum bez usuwania wiadomości.'}</small></span><button type="button" onClick={toggleActiveRoomArchive}>{archivedRoomIds.includes(activeRoom.roomId) ? 'Przywróć' : 'Archiwizuj'}</button></section>
       {activeRoomIsGroup ? <>
         <section className="group-members-section"><h3>Członkowie <span>{activeGroupMembers.length}</span></h3><div className="group-member-list">{activeGroupMembers.map(member => <GroupMemberRow key={member.userId} member={member} client={client!} contacts={contacts} myUserId={myUserId}/>)}</div></section>
         {activeRoomIsAdmin ? <form onSubmit={saveRoomSettings} className="group-admin-form">
@@ -1322,6 +1515,7 @@ type DemoConversation = {
   contactId?: string
   isGroup?: boolean
   members?: number
+  archived?: boolean
 }
 type DemoSnapshot = { version: 1, profile: DemoProfile, contacts: DemoContact[], conversations: DemoConversation[] }
 
@@ -1389,8 +1583,11 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
   const [conversationName, setConversationName] = useState('')
   const [conversationAvatar, setConversationAvatar] = useState('')
   const [notice, setNotice] = useState('')
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('chats')
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const active = conversations.find(conversation => conversation.id === activeId)
-  const visible = conversations.filter(conversation => conversation.name.toLowerCase().includes(search.toLowerCase()))
+  const visible = conversations.filter(conversation => conversation.name.toLowerCase().includes(search.toLowerCase()) && (workspaceView === 'archived' ? conversation.archived : !conversation.archived))
 
   useEffect(() => () => {
     if (attachmentPreview) URL.revokeObjectURL(attachmentPreview)
@@ -1561,6 +1758,45 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
     setNotice(active.isGroup ? 'Grupa została usunięta z tego urządzenia.' : 'Rozmowa została usunięta z tego urządzenia.')
   }
 
+  function openDemoView(view: WorkspaceView) {
+    setWorkspaceView(view)
+    setActiveId('')
+    setSearch('')
+    setSelectionMode(false)
+    setSelectedIds([])
+    setDrawer(false)
+  }
+
+  function toggleDemoSelection(id: string) {
+    setSelectedIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])
+  }
+
+  function archiveDemoSelected(archived: boolean) {
+    setConversations(current => current.map(conversation => selectedIds.includes(conversation.id) ? { ...conversation, archived } : conversation))
+    setSelectedIds([])
+    setSelectionMode(false)
+    setActiveId('')
+    setNotice(archived ? 'Wybrane rozmowy zostały zarchiwizowane.' : 'Wybrane rozmowy wróciły na główną listę.')
+  }
+
+  function deleteDemoSelected() {
+    if (!selectedIds.length || !window.confirm(`Usunąć ${selectedIds.length} zaznaczonych rozmów z tego urządzenia?`)) return
+    setConversations(current => current.filter(conversation => !selectedIds.includes(conversation.id)))
+    setSelectedIds([])
+    setSelectionMode(false)
+    setActiveId('')
+    setNotice('Wybrane rozmowy zostały usunięte z tego urządzenia.')
+  }
+
+  function toggleActiveDemoArchive() {
+    if (!active) return
+    const archived = !active.archived
+    setConversations(current => current.map(conversation => conversation.id === active.id ? { ...conversation, archived } : conversation))
+    setActiveId('')
+    setConversationDialog(false)
+    setNotice(archived ? 'Rozmowa została zarchiwizowana.' : 'Rozmowa wróciła na główną listę.')
+  }
+
   function submitDemoGroup(event: FormEvent) {
     event.preventDefault()
     if (groupDialog === 'create') {
@@ -1570,7 +1806,7 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
       const id = `group-${Date.now()}`
       const group: DemoConversation = {
         id, name, isGroup: true, members: memberCount, preview: 'Grupa została utworzona', time: 'teraz',
-        messages: [{ id: Date.now(), author: 'Komunikatr E-Prom', body: `Utworzono grupę „${name}”. Możesz już rozpocząć rozmowę.`, time: 'teraz' }],
+        messages: [{ id: Date.now(), author: 'Komunikator', body: `Utworzono grupę „${name}”. Możesz już rozpocząć rozmowę.`, time: 'teraz' }],
       }
       setConversations(current => [group, ...current])
       setActiveId(id)
@@ -1581,8 +1817,8 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
     const existing = conversations.find(conversation => conversation.id === 'eprom-test-group')
     if (!existing) {
       const joined: DemoConversation = {
-        id: 'eprom-test-group', name: 'Grupa testowa E-Prom', isGroup: true, members: 8, preview: 'Dołączono do grupy', time: 'teraz',
-        messages: [{ id: Date.now(), author: 'Komunikatr E-Prom', body: 'Dołączyłeś do grupy przy użyciu kodu zaproszenia.', time: 'teraz' }],
+        id: 'eprom-test-group', name: 'Grupa testowa', isGroup: true, members: 8, preview: 'Dołączono do grupy', time: 'teraz',
+        messages: [{ id: Date.now(), author: 'Komunikator', body: 'Dołączyłeś do grupy przy użyciu kodu zaproszenia.', time: 'teraz' }],
       }
       setConversations(current => [joined, ...current])
     }
@@ -1599,17 +1835,20 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
     {drawer && <button className="drawer-scrim" aria-label="Zamknij menu" onClick={() => setDrawer(false)} />}
     <aside className={`sidebar ${drawer ? 'open' : ''}`}>
       <header className="sidebar-brand">
-        <span className="brand-mark small"><BrandIcon /></span><strong>Komunikatr E-Prom</strong>
+        <span className="brand-mark small"><BrandIcon /></span><strong>Komunikator</strong>
         <span className="demo-badge">DEMO</span>
         <button className="icon-button close-drawer" onClick={() => setDrawer(false)} aria-label="Zamknij menu"><Icon name="close" /></button>
       </header>
       <button className="user-card user-card-button" onClick={openAccountSettings}>{profile.avatar ? <img className="user-avatar" src={profile.avatar} alt="" /> : <span className="user-avatar">{profile.name.split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase()}</span>}<div><strong>{profile.name}</strong><small>{profile.about} · {phone}</small></div></button>
       <nav className="side-nav" aria-label="Zasoby użytkownika">
-        <button className="active" onClick={() => setDrawer(false)}><Icon name="chat" /><span>Wszystkie rozmowy</span><b>{conversations.length}</b></button>
+        <span className="nav-label">Rozmowy</span>
+        <button className={workspaceView === 'chats' ? 'active' : ''} onClick={() => openDemoView('chats')}><Icon name="chat" /><span>Wiadomości</span><b>{conversations.filter(item => !item.archived).length}</b></button>
+        <button className={workspaceView === 'telegram' ? 'active telegram-nav-button' : 'telegram-nav-button'} onClick={() => openDemoView('telegram')}><Icon name="history" /><span>Archiwum Telegrama</span></button>
+        <button className={workspaceView === 'archived' ? 'active' : ''} onClick={() => openDemoView('archived')}><Icon name="archive" /><span>Zarchiwizowane</span><b>{conversations.filter(item => item.archived).length}</b></button>
+        <span className="nav-label">Narzędzia</span>
         <button onClick={() => { setContactsDialog(true); setDrawer(false) }}><Icon name="contacts" /><span>Kontakty</span><b>{contacts.length}</b></button>
         <button onClick={() => showPlannedFeature('Pliki i media')}><Icon name="files" /><span>Pliki i media</span></button>
-        <button onClick={() => showPlannedFeature('Historia')}><Icon name="history" /><span>Historia</span></button>
-        <button onClick={openAccountSettings}><Icon name="settings" /><span>Ustawienia konta</span></button>
+        <button onClick={openAccountSettings}><Icon name="settings" /><span>Ustawienia</span></button>
       </nav>
       <div className="sidebar-bottom">
         <p><span className="status-dot ready" /><strong>Tryb demonstracyjny</strong><small>Dane wyłącznie na tym urządzeniu</small></p>
@@ -1617,18 +1856,21 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
       </div>
     </aside>
 
+    {workspaceView === 'telegram' ? <TelegramArchiveWorkspace ownerId={`demo:${phone}`} onOpenMenu={() => setDrawer(true)} onNewConversation={() => { openDemoView('chats'); setNewChat(true) }}/> : <>
     <section className="rooms-panel">
       <header className="rooms-header">
         <button className="mobile-logo" onClick={() => setDrawer(true)} aria-label="Otwórz menu"><BrandIcon /></button>
-        <div><span>Wersja demonstracyjna</span><h1>Wiadomości</h1></div>
-        <button className="new-chat-button" onClick={() => setNewChat(true)} aria-label="Nowa rozmowa"><Icon name="plus" /></button>
+        <div><span>Wersja demonstracyjna</span><h1>{workspaceView === 'archived' ? 'Archiwum' : 'Wiadomości'}</h1></div>
+        {workspaceView === 'chats' && <button className="new-chat-button" onClick={() => setNewChat(true)} aria-label="Nowa rozmowa"><Icon name="plus" /></button>}
       </header>
       <label className="search"><Icon name="search" /><span className="sr-only">Szukaj rozmów</span><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Szukaj rozmowy" /></label>
-      <div className="group-actions"><button onClick={() => setGroupDialog('create')}><Icon name="contacts" />Utwórz grupę</button><button onClick={() => setGroupDialog('join')}><Icon name="plus" />Dołącz do grupy</button></div>
+      {workspaceView === 'chats' && <div className="group-actions"><button onClick={() => setGroupDialog('create')}><Icon name="contacts" />Utwórz grupę</button><button onClick={() => setGroupDialog('join')}><Icon name="plus" />Dołącz do grupy</button></div>}
+      <div className={`selection-toolbar ${selectionMode ? 'active' : ''}`}>{selectionMode ? <><strong>{selectedIds.length ? `Wybrano: ${selectedIds.length}` : 'Wybierz rozmowy'}</strong><span><button type="button" disabled={!selectedIds.length} onClick={() => archiveDemoSelected(workspaceView !== 'archived')}><Icon name={workspaceView === 'archived' ? 'check' : 'archive'}/>{workspaceView === 'archived' ? 'Przywróć' : 'Archiwizuj'}</button><button className="selection-delete" type="button" disabled={!selectedIds.length} onClick={deleteDemoSelected}><Icon name="trash"/>Usuń</button><button type="button" onClick={() => { setSelectionMode(false); setSelectedIds([]) }}>Anuluj</button></span></> : <button className="start-selection-button" type="button" disabled={!visible.length} onClick={() => setSelectionMode(true)}><Icon name="check"/>Zaznacz rozmowy</button>}</div>
       {notice && <p className="demo-notice">{notice}<button onClick={() => setNotice('')} aria-label="Zamknij"><Icon name="close" /></button></p>}
       <div className="rooms-scroll">
-        <h2 className="list-title">Rozmowy <span>{visible.length}</span></h2>
-        <div className="room-list">{visible.map(conversation => <button key={conversation.id} className={conversation.id === activeId ? 'active' : ''} onClick={() => setActiveId(conversation.id)}><DemoAvatar name={conversation.name} avatar={conversation.avatar} /><span><strong>{conversation.name}</strong><small>{conversation.preview}</small></span><time>{conversation.time}</time></button>)}</div>
+        <h2 className="list-title">{workspaceView === 'archived' ? 'Zarchiwizowane' : 'Rozmowy'} <span>{visible.length}</span></h2>
+        <div className={`room-list ${selectionMode ? 'selection-list' : ''}`}>{visible.map(conversation => { const selected = selectedIds.includes(conversation.id); return <button key={conversation.id} aria-pressed={selectionMode ? selected : undefined} className={`${conversation.id === activeId && !selectionMode ? 'active' : ''} ${selected ? 'selected' : ''}`} onClick={() => selectionMode ? toggleDemoSelection(conversation.id) : setActiveId(conversation.id)}>{selectionMode && <span className="selection-check">{selected && <Icon name="check"/>}</span>}<DemoAvatar name={conversation.name} avatar={conversation.avatar} /><span className="room-copy"><strong>{conversation.name}</strong><small>{conversation.preview}</small></span><time>{conversation.time}</time></button> })}</div>
+        {visible.length === 0 && <div className="empty-list"><Icon name={workspaceView === 'archived' ? 'archive' : 'chat'}/><p>{workspaceView === 'archived' ? 'Nie masz zarchiwizowanych rozmów.' : 'Nie znaleziono rozmów.'}</p></div>}
       </div>
     </section>
 
@@ -1642,12 +1884,13 @@ function DemoWorkspace({ phone, onLogout }: { phone: string, onLogout: () => voi
         </form>
       </> : <div className="chat-placeholder"><span><Icon name="chat" /></span><h2>Wybierz rozmowę</h2><p>Otwórz rozmowę z listy albo rozpocznij nową.</p><button onClick={() => setNewChat(true)}><Icon name="plus" />Nowa rozmowa</button></div>}
     </section>
+    </>}
 
     {newChat && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="demo-new-chat-title"><button className="icon-button modal-close" onClick={() => setNewChat(false)} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="chat" /></span><h2 id="demo-new-chat-title">Nowa rozmowa</h2><p>Wpisz nazwę osoby, aby zobaczyć działanie nowego czatu.</p><form onSubmit={createDemoChat}><label>Imię lub nazwa kontaktu<input autoFocus required value={contactName} onChange={event => setContactName(event.target.value)} placeholder="np. Jan Nowak" /></label><button className="primary-button">Rozpocznij rozmowę</button></form></section></div>}
-    {groupDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="demo-group-title"><button className="icon-button modal-close" onClick={() => setGroupDialog(null)} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="contacts" /></span><h2 id="demo-group-title">{groupDialog === 'create' ? 'Utwórz nową grupę' : 'Dołącz do grupy'}</h2><p>{groupDialog === 'create' ? 'Nadaj grupie nazwę i wpisz osoby, które mają wziąć udział w teście.' : 'Wklej dowolny przykładowy kod. Tryb demonstracyjny utworzy tylko lokalny podgląd i nie połączy Cię z prawdziwą grupą.'}</p><form onSubmit={submitDemoGroup}>{groupDialog === 'create' ? <><label>Nazwa grupy<input autoFocus required minLength={3} maxLength={60} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="np. Zespół E-Prom" /></label><label>Uczestnicy<input value={groupMembers} onChange={event => setGroupMembers(event.target.value)} placeholder="Anna, Marek, Joanna" /></label></> : <label>Przykładowy kod<input autoFocus required value={groupInvitation} onChange={event => setGroupInvitation(event.target.value)} placeholder="np. DEMO-GRUPA" /></label>}<button className="primary-button">{groupDialog === 'create' ? 'Utwórz grupę' : 'Dołącz do grupy'}</button></form></section></div>}
+    {groupDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="demo-group-title"><button className="icon-button modal-close" onClick={() => setGroupDialog(null)} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="contacts" /></span><h2 id="demo-group-title">{groupDialog === 'create' ? 'Utwórz nową grupę' : 'Dołącz do grupy'}</h2><p>{groupDialog === 'create' ? 'Nadaj grupie nazwę i wpisz osoby, które mają wziąć udział w teście.' : 'Wklej dowolny przykładowy kod. Tryb demonstracyjny utworzy tylko lokalny podgląd i nie połączy Cię z prawdziwą grupą.'}</p><form onSubmit={submitDemoGroup}>{groupDialog === 'create' ? <><label>Nazwa grupy<input autoFocus required minLength={3} maxLength={60} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="np. Zespół projektu" /></label><label>Uczestnicy<input value={groupMembers} onChange={event => setGroupMembers(event.target.value)} placeholder="Anna, Marek, Joanna" /></label></> : <label>Przykładowy kod<input autoFocus required value={groupInvitation} onChange={event => setGroupInvitation(event.target.value)} placeholder="np. DEMO-GRUPA" /></label>}<button className="primary-button">{groupDialog === 'create' ? 'Utwórz grupę' : 'Dołącz do grupy'}</button></form></section></div>}
     {contactsDialog && <div className="modal-layer" role="presentation"><section className="modal contacts-modal" role="dialog" aria-modal="true" aria-labelledby="contacts-title"><button className="icon-button modal-close" onClick={() => { setContactsDialog(false); resetContactForm() }} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="contacts" /></span><h2 id="contacts-title">Kontakty</h2><p>Kontakty są zapisane wyłącznie na tym urządzeniu i nie przechodzą przez Google.</p><div className="contacts-list">{contacts.map(contact => <article key={contact.id}><DemoAvatar name={contact.name} avatar={contact.avatar} /><div><strong>{contact.name}</strong><small>{contact.phone || 'Bez numeru telefonu'}</small></div><span><button type="button" onClick={() => openContactConversation(contact)}>Napisz</button><button type="button" onClick={() => editContact(contact)}>Edytuj</button><button className="danger-link" type="button" onClick={() => removeContact(contact)}>Usuń</button></span></article>)}</div><form className="contact-form" onSubmit={saveContact}><h3>{editingContactId ? 'Edytuj kontakt' : 'Dodaj kontakt'}</h3><div className="avatar-editor"><DemoAvatar name={contactName || 'Nowy kontakt'} avatar={contactAvatar} /><label className="secondary-button">Wybierz avatar<input type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) void selectAvatar(file, setContactAvatar); event.target.value = '' }} /></label>{contactAvatar && <button type="button" className="text-button" onClick={() => setContactAvatar('')}>Usuń zdjęcie</button>}</div><label>Imię i nazwisko<input required value={contactName} onChange={event => setContactName(event.target.value)} placeholder="np. Jan Nowak" /></label><label>Numer telefonu<input type="tel" inputMode="tel" value={contactPhone} onChange={event => setContactPhone(event.target.value)} placeholder="+48 500 000 000" /></label><button className="primary-button">{editingContactId ? 'Zapisz zmiany' : 'Dodaj kontakt'}</button>{editingContactId && <button className="secondary-button" type="button" onClick={resetContactForm}>Anuluj edycję</button>}</form></section></div>}
     {accountDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><button className="icon-button modal-close" onClick={() => setAccountDialog(false)} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="settings" /></span><h2 id="account-title">Ustawienia konta</h2><p>Dane profilu pozostają na tym urządzeniu do czasu podłączenia prywatnego serwera.</p><form onSubmit={saveAccountSettings}><div className="avatar-editor"><DemoAvatar name={accountDraft.name || 'Użytkownik'} avatar={accountDraft.avatar} /><label className="secondary-button">Zmień avatar<input type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) void selectAvatar(file, value => setAccountDraft(current => ({ ...current, avatar: value }))); event.target.value = '' }} /></label>{accountDraft.avatar && <button type="button" className="text-button" onClick={() => setAccountDraft(current => ({ ...current, avatar: undefined }))}>Usuń zdjęcie</button>}</div><label>Nazwa wyświetlana<input required maxLength={60} value={accountDraft.name} onChange={event => setAccountDraft(current => ({ ...current, name: event.target.value }))} /></label><label>Opis profilu<input maxLength={100} value={accountDraft.about} onChange={event => setAccountDraft(current => ({ ...current, about: event.target.value }))} placeholder="np. Dostępny" /></label><label className="setting-toggle"><span><strong>Powiadomienia</strong><small>Informuj o nowych wiadomościach</small></span><input type="checkbox" checked={accountDraft.notifications} onChange={event => setAccountDraft(current => ({ ...current, notifications: event.target.checked }))} /></label><label className="setting-toggle"><span><strong>Podgląd wiadomości</strong><small>Pokazuj treść w powiadomieniu</small></span><input type="checkbox" checked={accountDraft.messagePreviews} onChange={event => setAccountDraft(current => ({ ...current, messagePreviews: event.target.checked }))} /></label><p className="local-storage-note"><Icon name="lock" /> Motyw jasny lub ciemny jest dobierany automatycznie z ustawień telefonu.</p><button className="primary-button">Zapisz ustawienia</button></form></section></div>}
-    {conversationDialog && active && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="conversation-settings-title"><button className="icon-button modal-close" onClick={() => setConversationDialog(false)} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="settings" /></span><h2 id="conversation-settings-title">{active.isGroup ? 'Ustawienia grupy' : 'Ustawienia kontaktu'}</h2><p>Zmień nazwę i zdjęcie widoczne w tej aplikacji.</p><form onSubmit={saveConversationSettings}><div className="avatar-editor"><DemoAvatar name={conversationName || active.name} avatar={conversationAvatar} /><label className="secondary-button">Zmień avatar<input type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) void selectAvatar(file, setConversationAvatar); event.target.value = '' }} /></label>{conversationAvatar && <button type="button" className="text-button" onClick={() => setConversationAvatar('')}>Usuń zdjęcie</button>}</div><label>{active.isGroup ? 'Nazwa grupy' : 'Nazwa kontaktu'}<input required maxLength={60} value={conversationName} onChange={event => setConversationName(event.target.value)} /></label><button className="primary-button">Zapisz zmiany</button></form><section className="danger-zone"><h3>{active.isGroup ? 'Usuń grupę' : 'Usuń rozmowę'}</h3><p>Element zostanie usunięty wyłącznie z tego urządzenia demonstracyjnego.</p><button type="button" onClick={deleteDemoConversation}>{active.isGroup ? 'Usuń grupę' : 'Usuń rozmowę'}</button></section></section></div>}
+    {conversationDialog && active && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="conversation-settings-title"><button className="icon-button modal-close" onClick={() => setConversationDialog(false)} aria-label="Zamknij"><Icon name="close" /></button><span className="modal-icon"><Icon name="settings" /></span><h2 id="conversation-settings-title">{active.isGroup ? 'Ustawienia grupy' : 'Ustawienia kontaktu'}</h2><p>Zmień nazwę i zdjęcie widoczne w tej aplikacji.</p><section className="archive-room-action"><Icon name="archive"/><span><strong>{active.archived ? 'Przywróć rozmowę' : 'Archiwizuj rozmowę'}</strong><small>{active.archived ? 'Rozmowa wróci na główną listę.' : 'Wiadomości pozostaną zapisane na urządzeniu.'}</small></span><button type="button" onClick={toggleActiveDemoArchive}>{active.archived ? 'Przywróć' : 'Archiwizuj'}</button></section><form onSubmit={saveConversationSettings}><div className="avatar-editor"><DemoAvatar name={conversationName || active.name} avatar={conversationAvatar} /><label className="secondary-button">Zmień avatar<input type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) void selectAvatar(file, setConversationAvatar); event.target.value = '' }} /></label>{conversationAvatar && <button type="button" className="text-button" onClick={() => setConversationAvatar('')}>Usuń zdjęcie</button>}</div><label>{active.isGroup ? 'Nazwa grupy' : 'Nazwa kontaktu'}<input required maxLength={60} value={conversationName} onChange={event => setConversationName(event.target.value)} /></label><button className="primary-button">Zapisz zmiany</button></form><section className="danger-zone"><h3>{active.isGroup ? 'Usuń grupę' : 'Usuń rozmowę'}</h3><p>Element zostanie usunięty wyłącznie z tego urządzenia demonstracyjnego.</p><button type="button" onClick={deleteDemoConversation}>{active.isGroup ? 'Usuń grupę' : 'Usuń rozmowę'}</button></section></section></div>}
   </main>
 }
 

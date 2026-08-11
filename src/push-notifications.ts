@@ -64,7 +64,7 @@ export async function enablePushNotifications(client: MatrixClient, homeserverUr
   if (!registerResponse.ok || !registerResult.pushKey) throw new Error('PUSH_SERVICE_UNAVAILABLE')
 
   await client.setPusher({
-    app_display_name: 'Komunikator E-Prom',
+    app_display_name: 'Komunikator',
     app_id: PUSH_APP_ID,
     append: true,
     data: { format: 'event_id_only', url: PUSH_GATEWAY_URL },
