@@ -101,7 +101,7 @@ export async function loginWithPhonePassword(phone: string, password: string, ac
     const result = await matrixClient.login('m.login.password', {
       identifier: { type: 'm.id.user', user: phoneToLocalpart(phone) },
       password,
-      initial_device_display_name: 'Komunikatr E-Prom',
+      initial_device_display_name: 'Komunikator',
     })
     const session: AuthSession = {
       accessToken: result.access_token,
@@ -132,7 +132,7 @@ export async function loginWithSsoToken(token: string) {
   try {
     const result = await matrixClient.login('m.login.token', {
       token,
-      initial_device_display_name: 'Komunikatr E-Prom',
+      initial_device_display_name: 'Komunikator',
     })
     const session: AuthSession = {
       accessToken: result.access_token,
