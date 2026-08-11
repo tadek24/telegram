@@ -1,7 +1,7 @@
 self.addEventListener('push', event => {
   let message = {}
   try { message = event.data?.json() || {} } catch { message = {} }
-  const title = typeof message.title === 'string' ? message.title : 'Komunikator E-Prom'
+  const title = typeof message.title === 'string' ? message.title : 'Komunikator'
   const options = {
     body: typeof message.body === 'string' ? message.body : 'Masz nową wiadomość.',
     icon: '/icons/eprom-icon-192.png',
