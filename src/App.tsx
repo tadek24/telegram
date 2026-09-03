@@ -35,9 +35,10 @@ import {
   sendMediaAttachment,
   startAuthenticatedClient,
 } from './matrix/client'
+import { CallOverlay, useMatrixCalls } from './matrix/calls'
 
 type AppStatus = 'restoring' | 'logged-out' | 'syncing' | 'ready' | 'offline' | 'demo'
-type IconName = 'search' | 'chat' | 'contacts' | 'files' | 'history' | 'archive' | 'trash' | 'check' | 'download' | 'settings' | 'logout' | 'send' | 'plus' | 'menu' | 'close' | 'lock' | 'attach' | 'camera' | 'image' | 'file'
+type IconName = 'search' | 'chat' | 'contacts' | 'files' | 'history' | 'archive' | 'trash' | 'check' | 'download' | 'settings' | 'logout' | 'send' | 'plus' | 'menu' | 'close' | 'lock' | 'attach' | 'camera' | 'image' | 'file' | 'phone' | 'video'
 type ChatTheme = 'system' | 'light' | 'dark' | 'blue'
 type WorkspaceView = 'chats' | 'archived' | 'telegram'
 type ServerContact = { id: string, name: string, phone: string, avatar?: string, roomId?: string }
@@ -94,6 +95,8 @@ function Icon({ name }: { name: IconName }) {
     camera: <><path d="M14.5 4 16 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l1.5-3Z"/><circle cx="12" cy="13" r="3"/></>,
     image: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 15-5-5L5 20"/></>,
     file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></>,
+    phone: <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.9.6 2.9.7a2 2 0 0 1 1.7 2Z"/>,
+    video: <><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3Z"/></>,
   }
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
 }
@@ -681,6 +684,7 @@ export default function App() {
   const [error, setError] = useState('')
   const timelineRef = useRef<HTMLDivElement>(null)
   const appWasHidden = useRef(false)
+  const calls = useMatrixCalls(client)
 
   useEffect(() => () => {
     if (attachmentPreview) URL.revokeObjectURL(attachmentPreview)
@@ -912,6 +916,8 @@ export default function App() {
     .filter(member => member.membership === 'join' || member.membership === 'invite')
     .sort((a, b) => b.powerLevel - a.powerLevel || groupMemberDisplayName(a, contacts, myUserId).localeCompare(groupMemberDisplayName(b, contacts, myUserId), 'pl')) : []
   const activeRoomMemberIds = new Set(activeRoom?.getMembers().filter(member => member.membership === 'join' || member.membership === 'invite').map(member => member.userId) ?? [])
+  const callRoom = rooms.find(room => room.roomId === calls.roomId)
+  const callRoomName = callRoom ? displayRoomName(callRoom) : 'Rozmówca'
   const groupInviteContacts = activeRoomIsGroup && client?.getDomain() ? contacts.filter(contact => {
     try { return !activeRoomMemberIds.has(phoneToUserId(contact.phone, client.getDomain()!)) }
     catch { return false }
@@ -1356,6 +1362,7 @@ export default function App() {
 
   async function logout() {
     setBusy(true)
+    if (calls.call) calls.hangup()
     const userId = client?.getUserId()
     if (client && pushKey) {
       try {
@@ -1419,7 +1426,7 @@ export default function App() {
 
     <section className={`chat-panel ${activeRoom ? 'mobile-active' : ''}`}>
       {activeRoom ? <>
-        <header className="chat-header"><button className="back-button" onClick={() => setActiveRoomId('')} aria-label="Wróć do rozmów">‹</button>{contactForRoom(activeRoom) ? <DemoAvatar name={contactForRoom(activeRoom)!.name} avatar={contactForRoom(activeRoom)!.avatar}/> : <RoomAvatar room={activeRoom} client={client}/>}<div><strong>{displayRoomName(activeRoom)}</strong><small><Icon name="lock"/> {activeRoomIsGroup ? `${activeGroupMembers.filter(member => member.membership === 'join').length} członków · grupa chroniona` : 'Rozmowa prywatna i chroniona'}</small></div><button className="chat-settings-button" type="button" onClick={() => openRoomSettings(activeRoom)} aria-label={activeRoomIsGroup ? activeRoomIsAdmin ? 'Ustawienia grupy' : 'Informacje o grupie' : 'Ustawienia rozmowy prywatnej'}><Icon name={activeRoomIsGroup && !activeRoomIsAdmin ? 'contacts' : 'settings'}/></button></header>
+        <header className="chat-header"><button className="back-button" onClick={() => setActiveRoomId('')} aria-label="Wróć do rozmów">‹</button>{contactForRoom(activeRoom) ? <DemoAvatar name={contactForRoom(activeRoom)!.name} avatar={contactForRoom(activeRoom)!.avatar}/> : <RoomAvatar room={activeRoom} client={client}/>}<div><strong>{displayRoomName(activeRoom)}</strong><small><Icon name="lock"/> {activeRoomIsGroup ? `${activeGroupMembers.filter(member => member.membership === 'join').length} członków · grupa chroniona` : 'Rozmowa prywatna i chroniona'}</small></div>{!activeRoomIsGroup && <span className="chat-call-actions"><button className="chat-settings-button" type="button" disabled={Boolean(calls.call)} onClick={() => void calls.start(activeRoom.roomId, 'voice').catch(() => setError('Nie można teraz rozpocząć rozmowy głosowej na tym urządzeniu.'))} aria-label="Rozpocznij rozmowę głosową"><Icon name="phone"/></button><button className="chat-settings-button" type="button" disabled={Boolean(calls.call)} onClick={() => void calls.start(activeRoom.roomId, 'video').catch(() => setError('Nie można teraz rozpocząć rozmowy wideo na tym urządzeniu.'))} aria-label="Rozpocznij rozmowę wideo"><Icon name="video"/></button></span>}<button className="chat-settings-button" type="button" onClick={() => openRoomSettings(activeRoom)} aria-label={activeRoomIsGroup ? activeRoomIsAdmin ? 'Ustawienia grupy' : 'Informacje o grupie' : 'Ustawienia rozmowy prywatnej'}><Icon name={activeRoomIsGroup && !activeRoomIsAdmin ? 'contacts' : 'settings'}/></button></header>
         <div className="timeline" ref={timelineRef}>{messages.length === 0 && <div className="conversation-empty"><Icon name="lock"/><h2>Bezpieczna rozmowa</h2><p>Napisz pierwszą wiadomość w tym pokoju.</p></div>}{messages.map(message => <Message key={message.getId() ?? `${message.getTs()}-${message.getSender()}`} event={message} room={activeRoom} client={client!} own={message.getSender() === myUserId}/>)}</div>
         <form className="composer" onSubmit={sendMessage}>
           {pendingFile && <AttachmentPreview file={pendingFile} previewUrl={attachmentPreview} progress={uploadProgress} onClear={clearAttachment} />}
@@ -1428,6 +1435,8 @@ export default function App() {
       </> : <div className="chat-placeholder"><span><Icon name="chat"/></span><h2>Wybierz rozmowę</h2><p>Otwórz pokój z listy lub rozpocznij nową, szyfrowaną rozmowę.</p><button onClick={() => setNewChat(true)}><Icon name="plus"/>Nowa rozmowa</button></div>}
     </section>
     </>}
+
+    <CallOverlay calls={calls} roomName={callRoomName}/>
 
     {newChat && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-chat-title"><button className="icon-button modal-close" onClick={() => { setNewChat(false); setSelectedPerson(null); setPeople([]) }} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="lock"/></span><h2 id="new-chat-title">Nowa prywatna rozmowa</h2><p>{authConfig.phoneMatrixLoginEnabled ? 'Wpisz numer telefonu osoby, z którą chcesz rozpocząć chronioną rozmowę.' : 'Znajdź osobę, z którą chcesz rozpocząć chronioną rozmowę.'}</p><form onSubmit={createChat}><label>{authConfig.phoneMatrixLoginEnabled ? 'Numer telefonu' : 'Imię lub nazwa użytkownika'}<input autoFocus required type={authConfig.phoneMatrixLoginEnabled ? 'tel' : 'text'} inputMode={authConfig.phoneMatrixLoginEnabled ? 'tel' : undefined} value={selectedPerson?.name ?? invitee} onChange={e => { setInvitee(e.target.value); setSelectedPerson(null); setPeople([]) }} placeholder={authConfig.phoneMatrixLoginEnabled ? '+48 500 000 000' : 'Wpisz nazwę'}/></label>{!authConfig.phoneMatrixLoginEnabled && people.length > 0 && <div className="people-results">{people.map(person => <button type="button" key={person.userId} onClick={() => setSelectedPerson(person)}><ServerAvatar name={person.name} source={person.avatar} client={client} className="people-avatar" size={80}/><strong>{person.name}</strong></button>)}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : authConfig.phoneMatrixLoginEnabled || selectedPerson ? 'Rozpocznij rozmowę' : 'Znajdź osobę'}</button></form></section></div>}
     {groupDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="group-dialog-title"><button className="icon-button modal-close" onClick={() => setGroupDialog(null)} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="contacts"/></span><h2 id="group-dialog-title">{groupDialog === 'create' ? 'Utwórz nową grupę' : 'Dołącz do grupy'}</h2><p>{groupDialog === 'create' ? 'Nadaj grupie czytelną nazwę. Jako jej twórca zostaniesz jedynym administratorem.' : 'Wpisz krótki kod otrzymany od administratora grupy.'}</p><form onSubmit={submitGroup}>{groupDialog === 'create' ? <label>Nazwa grupy<input autoFocus required minLength={3} maxLength={60} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="np. Zespół projektu"/></label> : <label>Kod grupy<input autoFocus required minLength={8} maxLength={12} autoCapitalize="characters" value={groupInvitation} onChange={event => setGroupInvitation(event.target.value.toUpperCase())} placeholder="np. 7KQF-9M2R"/></label>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : groupDialog === 'create' ? 'Utwórz grupę' : 'Dołącz do grupy'}</button></form></section></div>}
