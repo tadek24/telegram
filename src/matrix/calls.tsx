@@ -14,6 +14,11 @@ export type MatrixCalls = {
   error: string
   muted: boolean
   videoMuted: boolean
+  playbackBlocked: boolean
+  localAudioAvailable: boolean
+  localVideoAvailable: boolean
+  remoteAudioAvailable: boolean
+  remoteVideoAvailable: boolean
   duration: number
   localVideoRef: RefObject<HTMLVideoElement | null>
   remoteVideoRef: RefObject<HTMLVideoElement | null>
@@ -23,6 +28,7 @@ export type MatrixCalls = {
   hangup: () => void
   toggleMicrophone: () => Promise<void>
   toggleVideo: () => Promise<void>
+  resumeRemoteMedia: () => Promise<void>
   close: () => void
 }
 
@@ -56,6 +62,7 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
   const [error, setError] = useState('')
   const [muted, setMuted] = useState(false)
   const [videoMuted, setVideoMuted] = useState(false)
+  const [playbackBlocked, setPlaybackBlocked] = useState(false)
   const [duration, setDuration] = useState(0)
   const [mediaRevision, setMediaRevision] = useState(0)
   const callRef = useRef<MatrixCall | null>(null)
@@ -84,6 +91,7 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
     setError('')
     setMuted(false)
     setVideoMuted(false)
+    setPlaybackBlocked(false)
     setDuration(0)
   }, [])
 
@@ -114,6 +122,7 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
     setError('')
     setMuted(false)
     setVideoMuted(false)
+    setPlaybackBlocked(false)
     setDuration(0)
 
     const onState = (state: unknown) => {
@@ -188,13 +197,19 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
 
   useEffect(() => {
     const nextCall = callRef.current
-    const attachStream = (element: HTMLVideoElement | null, stream?: MediaStream) => {
-      if (!element || element.srcObject === (stream ?? null)) return
-      element.srcObject = stream ?? null
-      if (stream) void element.play().catch(() => undefined)
+    const attachStream = (element: HTMLVideoElement | null, stream: MediaStream | undefined, remote = false) => {
+      if (!element) return
+      if (element.srcObject !== (stream ?? null)) element.srcObject = stream ?? null
+      if (!stream) {
+        if (remote) setPlaybackBlocked(false)
+        return
+      }
+      void element.play()
+        .then(() => { if (remote) setPlaybackBlocked(false) })
+        .catch(() => { if (remote) setPlaybackBlocked(true) })
     }
     attachStream(localVideoRef.current, nextCall?.localUsermediaStream)
-    attachStream(remoteVideoRef.current, nextCall?.remoteUsermediaStream)
+    attachStream(remoteVideoRef.current, nextCall?.remoteUsermediaStream, true)
   }, [call, mediaRevision, phase])
 
   useEffect(() => {
@@ -264,7 +279,26 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
     catch (reason) { setError(callErrorMessage(reason)) }
   }, [mode, videoMuted])
 
-  return { call, roomId, mode, phase, error, muted, videoMuted, duration, localVideoRef, remoteVideoRef, start, answer, reject, hangup, toggleMicrophone, toggleVideo, close: release }
+  const resumeRemoteMedia = useCallback(async () => {
+    const element = remoteVideoRef.current
+    if (!element?.srcObject) return
+    try {
+      element.muted = false
+      element.volume = 1
+      await element.play()
+      setPlaybackBlocked(false)
+    } catch {
+      setPlaybackBlocked(true)
+      setError('Przeglądarka nadal blokuje dźwięk rozmowy. Sprawdź, czy karta lub strona nie jest wyciszona.')
+    }
+  }, [])
+
+  const localAudioAvailable = Boolean(call?.localUsermediaStream?.getAudioTracks().length)
+  const localVideoAvailable = Boolean(call?.localUsermediaStream?.getVideoTracks().length)
+  const remoteAudioAvailable = Boolean(call?.remoteUsermediaStream?.getAudioTracks().length)
+  const remoteVideoAvailable = Boolean(call?.remoteUsermediaStream?.getVideoTracks().length)
+
+  return { call, roomId, mode, phase, error, muted, videoMuted, playbackBlocked, localAudioAvailable, localVideoAvailable, remoteAudioAvailable, remoteVideoAvailable, duration, localVideoRef, remoteVideoRef, start, answer, reject, hangup, toggleMicrophone, toggleVideo, resumeRemoteMedia, close: release }
 }
 
 function CallGlyph({ name }: { name: 'phone' | 'video' | 'microphone' | 'microphone-off' | 'video-off' | 'close' }) {
@@ -294,16 +328,27 @@ export function CallOverlay({ calls, roomName }: { calls: MatrixCalls, roomName:
       : calls.phase === 'connecting' ? 'Łączenie…'
         : calls.phase === 'connected' ? formatDuration(calls.duration)
           : 'Rozmowa zakończona')
+  const mediaWarning = calls.phase !== 'connected' || calls.duration < 4
+    ? ''
+    : !calls.localAudioAvailable
+      ? 'Mikrofon nie jest udostępniony. Zezwól tej stronie na używanie mikrofonu.'
+      : !calls.remoteAudioAvailable
+        ? 'Połączenie jest zestawione, ale nie dociera dźwięk drugiej osoby. Te sieci mogą wymagać serwera TURN.'
+        : calls.mode === 'video' && !calls.localVideoAvailable
+          ? 'Kamera nie jest udostępniona. Zezwól tej stronie na używanie kamery, a następnie naciśnij „Włącz kamerę”.'
+          : ''
 
   return <div className="call-layer" role="presentation">
     <section className={`call-window ${calls.mode}`} role="dialog" aria-modal="true" aria-label={`Rozmowa z ${roomName}`}>
       <div className="call-media-stage">
         <video ref={calls.remoteVideoRef} className={`call-remote-media ${calls.mode === 'voice' ? 'audio-only' : ''}`} autoPlay playsInline />
-        {(calls.mode === 'voice' || !calls.call.hasRemoteUserMediaVideoTrack) && <div className="call-person"><span>{roomName.trim().charAt(0).toUpperCase() || '?'}</span><strong>{roomName}</strong><small>{status}</small></div>}
+        {(calls.mode === 'voice' || !calls.remoteVideoAvailable) && <div className="call-person"><span>{roomName.trim().charAt(0).toUpperCase() || '?'}</span><strong>{roomName}</strong><small>{status}</small></div>}
         {calls.mode === 'video' && <video ref={calls.localVideoRef} className="call-local-media" autoPlay playsInline muted />}
         {ended && <button className="call-close" type="button" onClick={calls.close} aria-label="Zamknij okno rozmowy"><CallGlyph name="close"/></button>}
       </div>
       {calls.error && <p className="call-error" role="alert">{calls.error}</p>}
+      {!calls.error && mediaWarning && <p className="call-media-warning" role="status">{mediaWarning}</p>}
+      {calls.phase === 'connected' && calls.playbackBlocked && <button className="call-enable-audio" type="button" onClick={() => void calls.resumeRemoteMedia()}>Włącz dźwięk rozmowy</button>}
       <div className="call-controls">
         {incoming ? <>
           <button className="call-control decline" type="button" onClick={calls.reject}><CallGlyph name="phone"/><span>Odrzuć</span></button>
