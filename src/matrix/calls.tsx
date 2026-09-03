@@ -239,6 +239,7 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
     try {
       if (requestedMode === 'video') await nextCall.placeVideoCall()
       else await nextCall.placeVoiceCall()
+      setMediaRevision(value => value + 1)
     } catch (reason) {
       finish(nextCall, callErrorMessage(reason))
     }
@@ -249,7 +250,10 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
     if (!currentCall || phaseRef.current !== 'incoming') return
     phaseRef.current = 'connecting'
     setPhase('connecting')
-    try { await currentCall.answer(true, currentCall.type === 'video') }
+    try {
+      await currentCall.answer(true, currentCall.type === 'video')
+      setMediaRevision(value => value + 1)
+    }
     catch (reason) { finish(currentCall, callErrorMessage(reason)) }
   }, [finish])
 
@@ -275,7 +279,10 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
   const toggleVideo = useCallback(async () => {
     const currentCall = callRef.current
     if (!currentCall || mode !== 'video') return
-    try { setVideoMuted(await currentCall.setLocalVideoMuted(!videoMuted)) }
+    try {
+      setVideoMuted(await currentCall.setLocalVideoMuted(!videoMuted))
+      setMediaRevision(value => value + 1)
+    }
     catch (reason) { setError(callErrorMessage(reason)) }
   }, [mode, videoMuted])
 
@@ -343,7 +350,7 @@ export function CallOverlay({ calls, roomName }: { calls: MatrixCalls, roomName:
       <div className="call-media-stage">
         <video ref={calls.remoteVideoRef} className={`call-remote-media ${calls.mode === 'voice' ? 'audio-only' : ''}`} autoPlay playsInline />
         {(calls.mode === 'voice' || !calls.remoteVideoAvailable) && <div className="call-person"><span>{roomName.trim().charAt(0).toUpperCase() || '?'}</span><strong>{roomName}</strong><small>{status}</small></div>}
-        {calls.mode === 'video' && <video ref={calls.localVideoRef} className="call-local-media" autoPlay playsInline muted />}
+        {calls.mode === 'video' && <video ref={calls.localVideoRef} className={`call-local-media ${calls.localVideoAvailable ? '' : 'waiting'}`} autoPlay playsInline muted />}
         {ended && <button className="call-close" type="button" onClick={calls.close} aria-label="Zamknij okno rozmowy"><CallGlyph name="close"/></button>}
       </div>
       {calls.error && <p className="call-error" role="alert">{calls.error}</p>}
