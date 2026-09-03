@@ -43,6 +43,7 @@ async function startFromSession(session: AuthSession) {
     deviceId: session.deviceId,
     store: syncStore,
   })
+  matrixClient.setFallbackICEServerAllowed(true)
   try {
     if (syncStore) await syncStore.startup()
     await matrixClient.initRustCrypto({ cryptoDatabasePrefix: cryptoDatabasePrefix(session) })
