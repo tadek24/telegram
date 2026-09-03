@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { CallEvent, type MatrixCall, type MatrixClient } from 'matrix-js-sdk'
+import { CallDirection, CallState } from 'matrix-js-sdk/lib/webrtc/call'
 import { CallEventHandlerEvent } from 'matrix-js-sdk/lib/webrtc/callEventHandler'
 
 export type CallMode = 'voice' | 'video'
@@ -143,15 +144,46 @@ export function useMatrixCalls(client: MatrixClient | null): MatrixCalls {
     if (!client) return
     client.setFallbackICEServerAllowed(true)
     const onIncoming = (incomingCall: MatrixCall) => {
+      if (incomingCall.direction !== CallDirection.Inbound || incomingCall.state !== CallState.Ringing) return
       const room = client.getRoom(incomingCall.roomId)
-      if (!room || room.getJoinedMembers().length !== 2 || callRef.current) {
+      if (!room || room.getJoinedMembers().length < 2) return
+      if (room.getJoinedMembers().length !== 2 || callRef.current) {
         try { incomingCall.reject() } catch { /* there is no compatible call to answer */ }
         return
       }
       bind(incomingCall, 'incoming')
     }
+    const recoverIncoming = () => {
+      if (callRef.current) return
+      for (const pendingCall of client.callEventHandler?.calls.values() ?? []) {
+        if (pendingCall.direction === CallDirection.Inbound && pendingCall.state === CallState.Ringing) {
+          onIncoming(pendingCall)
+          if (callRef.current) return
+        }
+      }
+    }
+    const returnToApp = () => {
+      if (document.visibilityState !== 'visible') return
+      client.retryImmediately()
+      window.setTimeout(recoverIncoming, 150)
+      window.setTimeout(recoverIncoming, 900)
+    }
+    const visibilityChanged = () => {
+      if (document.visibilityState === 'visible') returnToApp()
+    }
     client.on(CallEventHandlerEvent.Incoming, onIncoming)
-    return () => { client.off(CallEventHandlerEvent.Incoming, onIncoming) }
+    window.addEventListener('focus', returnToApp)
+    window.addEventListener('pageshow', returnToApp)
+    document.addEventListener('visibilitychange', visibilityChanged)
+    const recoveryTimer = window.setInterval(recoverIncoming, 1_000)
+    recoverIncoming()
+    return () => {
+      client.off(CallEventHandlerEvent.Incoming, onIncoming)
+      window.removeEventListener('focus', returnToApp)
+      window.removeEventListener('pageshow', returnToApp)
+      document.removeEventListener('visibilitychange', visibilityChanged)
+      window.clearInterval(recoveryTimer)
+    }
   }, [bind, client])
 
   useEffect(() => {
@@ -285,4 +317,3 @@ export function CallOverlay({ calls, roomName }: { calls: MatrixCalls, roomName:
     </section>
   </div>
 }
-
