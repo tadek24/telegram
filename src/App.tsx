@@ -815,7 +815,7 @@ export default function App() {
         : false
       const wantsPush = typeof local?.pushEnabled === 'boolean'
         ? local.pushEnabled
-        : Boolean(savedPushKey || hasSubscription)
+        : Boolean(savedPushKey || hasSubscription || permissionGranted)
       if (cancelled) return
       setPushEnabledPreference(wantsPush)
       setPushKey('')
