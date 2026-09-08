@@ -7,6 +7,9 @@ services:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
     volumes:
       - ./data:/data
+    networks:
+      default:
+        ipv4_address: 172.30.55.4
 
   registration-helper:
     image: node:22-alpine
@@ -17,11 +20,15 @@ services:
       SYNAPSE_URL: http://synapse:8008
       REGISTRATION_SHARED_SECRET_FILE: /data/registration-helper-secret
       REGISTRATION_ACCESS_CODE_FILE: /data/registration-access-code
+      REGISTRATION_INVITATIONS_FILE: /data/registration-invitations.json
     volumes:
       - ./registration-helper.mjs:/app/registration-helper.mjs:ro
-      - ./data:/data:ro
+      - ./data:/data
     depends_on:
       - synapse
+    networks:
+      default:
+        ipv4_address: 172.30.55.2
 
   push-gateway:
     build:
@@ -53,6 +60,27 @@ services:
       - synapse
       - registration-helper
       - push-gateway
+    networks:
+      default:
+        ipv4_address: 172.30.55.5
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    container_name: eprom-test-cloudflared
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token-file
+      - /run/secrets/cloudflare_tunnel_token
+    secrets:
+      - cloudflare_tunnel_token
+    depends_on:
+      - gateway
+    networks:
+      default:
+        ipv4_address: 172.30.55.6
 
 networks:
   default:
@@ -60,3 +88,7 @@ networks:
     ipam:
       config:
         - subnet: 172.30.55.0/29
+
+secrets:
+  cloudflare_tunnel_token:
+    file: ./secrets/cloudflare_tunnel_token
