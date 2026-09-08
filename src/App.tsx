@@ -24,6 +24,8 @@ import {
   createEncryptedDirectRoom,
   createEncryptedDirectRoomByPhone,
   createEncryptedGroup,
+  createRegistrationInvite,
+  claimRegistrationInvite,
   GROUP_INVITE_EVENT,
   groupCodeToAlias,
   hasStoredSession,
@@ -110,8 +112,21 @@ function isInstalledApp() {
   return window.matchMedia('(display-mode: standalone)').matches || iosNavigator.standalone === true
 }
 
+function registrationInvitationFromUrl() {
+  const hash = window.location.hash.replace(/^#/, '')
+  return new URLSearchParams(hash).get('invite')?.trim() ?? ''
+}
+
+function clearRegistrationInvitationFromUrl() {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  hash.delete('invite')
+  const nextHash = hash.toString()
+  window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ''}`)
+}
+
 function shouldOpenInstallGuide() {
   if (isInstalledApp()) return false
+  if (registrationInvitationFromUrl()) return true
   if (new URLSearchParams(window.location.search).get('install') === '1') return true
   try { return localStorage.getItem(INSTALL_GUIDE_KEY) !== '1' }
   catch { return true }
@@ -138,7 +153,7 @@ function InstallGuideArt({ platform }: { platform: 'android' | 'ios' }) {
   </div>
 }
 
-function InstallGuide({ installPrompt, shareStatus, onInstall, onShare, onClose }: { installPrompt: InstallPromptEvent | null, shareStatus: string, onInstall: () => void, onShare: () => void, onClose: () => void }) {
+function InstallGuide({ installPrompt, shareStatus, invited, onInstall, onShare, onClose }: { installPrompt: InstallPromptEvent | null, shareStatus: string, invited?: boolean, onInstall: () => void, onShare: () => void, onClose: () => void }) {
   return <div className="modal-layer install-guide-layer" role="presentation">
     <section className="install-guide-modal" role="dialog" aria-modal="true" aria-labelledby="install-guide-title">
       <button className="icon-button install-guide-close" type="button" onClick={onClose} aria-label="Zamknij instrukcję"><Icon name="close" /></button>
@@ -171,7 +186,7 @@ function InstallGuide({ installPrompt, shareStatus, onInstall, onShare, onClose 
         </article>
       </div>
       <footer className="install-guide-footer">
-        <p><Icon name="lock" /><span><strong>Po instalacji</strong> Otwórz ikonę aplikacji i zaloguj się numerem telefonu oraz własnym PIN-em. Kod dostępu jest potrzebny tylko podczas tworzenia nowego konta.</span></p>
+        <p><Icon name="lock" /><span><strong>Po instalacji</strong> Otwórz ikonę aplikacji i zaloguj się numerem telefonu oraz własnym PIN-em. {invited ? 'To zaproszenie zastępuje kod dostępu podczas tworzenia konta.' : 'Kod dostępu jest potrzebny tylko podczas tworzenia nowego konta.'}</span></p>
         <div className="install-guide-actions">
           <button className="secondary-button" type="button" onClick={onShare}>{shareStatus || 'Udostępnij link instalacyjny'}</button>
           <button className="primary-button" type="button" onClick={onClose}>Przejdź do logowania</button>
@@ -193,6 +208,8 @@ function friendlyError(error: unknown) {
   if (code.includes('TOO_MANY_ATTEMPTS')) return 'Zbyt wiele prób. Odczekaj minutę i spróbuj ponownie.'
   if (code.includes('REGISTRATION_UNAVAILABLE')) return 'Nie udało się utworzyć konta. Spróbuj ponownie później.'
   if (code.includes('ACCESS_DENIED')) return 'Nieprawidłowy kod dostępu. Poproś zaufaną osobę o aktualny kod.'
+  if (code.includes('INVITE_INVALID')) return 'Ten link zaproszenia jest nieprawidłowy, wygasł albo został już wykorzystany.'
+  if (code.includes('INVITE_UNAVAILABLE') || code.includes('SERVICE_UNAVAILABLE')) return 'Nie udało się utworzyć zaproszenia. Spróbuj ponownie za chwilę.'
   if (code.includes('M_NOT_FOUND')) return 'Nie znaleziono użytkownika o tym numerze telefonu.'
   if (code.includes('M_FORBIDDEN')) return 'Nie masz uprawnień do tej operacji albo zaproszenie nie jest już aktywne.'
   if (code === 'PHONE_LOGIN_DISABLED' || code === 'SERVER_NOT_READY') return 'Usługa jest obecnie niedostępna.'
@@ -202,6 +219,10 @@ function friendlyError(error: unknown) {
 
 function formatTime(timestamp: number) {
   return new Intl.DateTimeFormat('pl', { hour: '2-digit', minute: '2-digit' }).format(timestamp)
+}
+
+function formatInviteExpiration(timestamp: number) {
+  return new Intl.DateTimeFormat('pl', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
 }
 
 const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024
@@ -383,6 +404,7 @@ function Login({ initialError = '', onDemoLogin, onAuthenticated }: { initialErr
   const [installGuideOpen, setInstallGuideOpen] = useState(shouldOpenInstallGuide)
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null)
   const [installShareStatus, setInstallShareStatus] = useState('')
+  const registrationInvite = registrationInvitationFromUrl()
   const configMessage = getProductionConfigError()
   const showPhoneLogin = authConfig.phoneMatrixLoginEnabled && !configMessage
   const showDemoLogin = Boolean(!showPhoneLogin && configMessage && authConfig.demoModeEnabled)
@@ -466,7 +488,7 @@ function Login({ initialError = '', onDemoLogin, onAuthenticated }: { initialErr
     event.preventDefault()
     setBusy(true); setError('')
     try {
-      const nextClient = await loginWithPhonePassword(phone, password, accessCode)
+      const nextClient = await loginWithPhonePassword(phone, password, accessCode, true, registrationInvite)
       setPassword('')
       onAuthenticated(nextClient)
     } catch (reason) {
@@ -502,10 +524,11 @@ function Login({ initialError = '', onDemoLogin, onAuthenticated }: { initialErr
       <p className="login-description">Zaloguj się bezpiecznie, aby przejść do swoich wiadomości.</p>
       {error && <p className="error-banner" role="alert">{error}</p>}
       {showPhoneLogin ? <form className="demo-login-form" onSubmit={submitPhoneLogin}>
+        {registrationInvite && <p className="registration-invite-note"><Icon name="contacts"/><span><strong>Masz zaproszenie</strong> Załóż konto albo zaloguj się. Nie potrzebujesz kodu dostępu.</span></p>}
         <label>Numer telefonu<input autoFocus required type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+48 500 000 000" /></label>
         <label>PIN lub hasło<input required minLength={8} type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>
-        <label>Kod dostępu <small>(tylko przy tworzeniu konta)</small><input type="password" autoComplete="off" value={accessCode} onChange={event => setAccessCode(event.target.value)} placeholder="Kod od zaufanej osoby" /></label>
-        <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Łączenie…' : 'Zaloguj się'}</button>
+        {!registrationInvite && <label>Kod dostępu <small>(tylko przy tworzeniu konta)</small><input type="password" autoComplete="off" value={accessCode} onChange={event => setAccessCode(event.target.value)} placeholder="Kod od zaufanej osoby" /></label>}
+        <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Łączenie…' : registrationInvite ? 'Zarejestruj się lub zaloguj' : 'Zaloguj się'}</button>
       </form> : showDemoLogin ? <form className="demo-login-form" onSubmit={submitDemo}>
         <p className="demo-label"><span /> Wersja demonstracyjna</p>
         {demoStep === 'phone' ? <label>Numer telefonu<input autoFocus required type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+48 500 000 000" /></label> : <>
@@ -519,7 +542,7 @@ function Login({ initialError = '', onDemoLogin, onAuthenticated }: { initialErr
       <p className="privacy-note">{showDemoLogin ? 'To lokalny PIN demonstracyjny. Profil, kontakty i rozmowy są zapisywane wyłącznie na tym urządzeniu.' : 'Połączenie jest chronione, a PIN nie jest zapisywany w przeglądarce.'}</p>
       {!isInstalledApp() && <button className="install-help-button" type="button" onClick={() => setInstallGuideOpen(true)}><span className="brand-mark small"><BrandIcon /></span><span><strong>Dodaj aplikację do telefonu</strong><small>Instrukcja dla Androida i iPhone’a</small></span><b>›</b></button>}
     </section>
-    {installGuideOpen && <InstallGuide installPrompt={installPrompt} shareStatus={installShareStatus} onInstall={() => void installApp()} onShare={() => void shareInstallLink()} onClose={closeInstallGuide} />}
+    {installGuideOpen && <InstallGuide installPrompt={installPrompt} shareStatus={installShareStatus} invited={Boolean(registrationInvite)} onInstall={() => void installApp()} onShare={() => void shareInstallLink()} onClose={closeInstallGuide} />}
   </main>
 }
 
@@ -641,6 +664,10 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [drawer, setDrawer] = useState(false)
   const [newChat, setNewChat] = useState(false)
+  const [friendInviteUrl, setFriendInviteUrl] = useState('')
+  const [friendInviteExpiresAt, setFriendInviteExpiresAt] = useState(0)
+  const [friendInviteStatus, setFriendInviteStatus] = useState('')
+  const [friendInviteBusy, setFriendInviteBusy] = useState(false)
   const [groupDialog, setGroupDialog] = useState<'create' | 'join' | null>(null)
   const [groupName, setGroupName] = useState('')
   const [groupInvitation, setGroupInvitation] = useState('')
@@ -684,6 +711,7 @@ export default function App() {
   const [error, setError] = useState('')
   const timelineRef = useRef<HTMLDivElement>(null)
   const appWasHidden = useRef(false)
+  const claimedRegistrationInvitation = useRef('')
   const calls = useMatrixCalls(client)
 
   useEffect(() => () => {
@@ -898,6 +926,27 @@ export default function App() {
     setGroupDialog('join')
   }, [client, groupDialog, status])
 
+  useEffect(() => {
+    if (!client || (status !== 'ready' && status !== 'offline')) return
+    const invitation = registrationInvitationFromUrl()
+    if (!invitation || claimedRegistrationInvitation.current === invitation) return
+    claimedRegistrationInvitation.current = invitation
+    void (async () => {
+      try {
+        const inviterUserId = await claimRegistrationInvite(client, invitation)
+        clearRegistrationInvitationFromUrl()
+        const existingRoom = client.getRooms().find(room => room.getMyMembership() === 'join' && room.getJoinedMembers().length === 2 && room.getJoinedMembers().some(member => member.userId === inviterUserId))
+        const roomId = existingRoom?.roomId ?? await createEncryptedDirectRoom(inviterUserId)
+        setWorkspaceView('chats')
+        setActiveRoomId(roomId)
+        setNewChat(false)
+      } catch (reason) {
+        clearRegistrationInvitationFromUrl()
+        setError(friendlyError(reason))
+      }
+    })()
+  }, [client, status])
+
   const contactForRoom = (room: Room) => contacts.find(contact => contact.roomId === room.roomId)
   const displayRoomName = (room: Room) => contactForRoom(room)?.name ?? safeRoomName(room)
   const visibleRooms = useMemo(() => rooms.filter(room => {
@@ -985,6 +1034,50 @@ export default function App() {
       setInvitee(''); setPeople([]); setSelectedPerson(null); setNewChat(false); setActiveRoomId(roomId)
     } catch (reason) { setError(friendlyError(reason)) }
     finally { setBusy(false) }
+  }
+
+  async function createFriendInvitation() {
+    if (!client) return
+    setFriendInviteBusy(true)
+    setFriendInviteStatus('')
+    try {
+      const invitation = await createRegistrationInvite(client)
+      const url = new URL('/', window.location.origin)
+      url.searchParams.set('install', '1')
+      url.hash = new URLSearchParams({ invite: invitation.token }).toString()
+      setFriendInviteUrl(url.toString())
+      setFriendInviteExpiresAt(invitation.expiresAt)
+      setFriendInviteStatus('Link jest gotowy do wysłania.')
+    } catch (reason) {
+      setFriendInviteStatus(friendlyError(reason))
+    } finally {
+      setFriendInviteBusy(false)
+    }
+  }
+
+  async function copyFriendInvitation() {
+    if (!friendInviteUrl) return
+    try {
+      await navigator.clipboard.writeText(friendInviteUrl)
+      setFriendInviteStatus('Link skopiowany.')
+    } catch {
+      setFriendInviteStatus('Nie udało się skopiować automatycznie. Zaznacz link powyżej.')
+    }
+  }
+
+  async function shareFriendInvitation() {
+    if (!friendInviteUrl) return
+    if (!navigator.share) { await copyFriendInvitation(); return }
+    try {
+      await navigator.share({
+        title: 'Zaproszenie do Komunikatora',
+        text: 'Otwórz link, zainstaluj Komunikator i utwórz konto. Po rejestracji od razu będziemy mogli rozpocząć rozmowę.',
+        url: friendInviteUrl,
+      })
+      setFriendInviteStatus('Zaproszenie wysłane.')
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) await copyFriendInvitation()
+    }
   }
 
   async function submitGroup(event: FormEvent) {
@@ -1439,7 +1532,22 @@ export default function App() {
 
     <CallOverlay calls={calls} roomName={callRoomName}/>
 
-    {newChat && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-chat-title"><button className="icon-button modal-close" onClick={() => { setNewChat(false); setSelectedPerson(null); setPeople([]) }} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="lock"/></span><h2 id="new-chat-title">Nowa prywatna rozmowa</h2><p>{authConfig.phoneMatrixLoginEnabled ? 'Wpisz numer telefonu osoby, z którą chcesz rozpocząć chronioną rozmowę.' : 'Znajdź osobę, z którą chcesz rozpocząć chronioną rozmowę.'}</p><form onSubmit={createChat}><label>{authConfig.phoneMatrixLoginEnabled ? 'Numer telefonu' : 'Imię lub nazwa użytkownika'}<input autoFocus required type={authConfig.phoneMatrixLoginEnabled ? 'tel' : 'text'} inputMode={authConfig.phoneMatrixLoginEnabled ? 'tel' : undefined} value={selectedPerson?.name ?? invitee} onChange={e => { setInvitee(e.target.value); setSelectedPerson(null); setPeople([]) }} placeholder={authConfig.phoneMatrixLoginEnabled ? '+48 500 000 000' : 'Wpisz nazwę'}/></label>{!authConfig.phoneMatrixLoginEnabled && people.length > 0 && <div className="people-results">{people.map(person => <button type="button" key={person.userId} onClick={() => setSelectedPerson(person)}><ServerAvatar name={person.name} source={person.avatar} client={client} className="people-avatar" size={80}/><strong>{person.name}</strong></button>)}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : authConfig.phoneMatrixLoginEnabled || selectedPerson ? 'Rozpocznij rozmowę' : 'Znajdź osobę'}</button></form></section></div>}
+    {newChat && <div className="modal-layer" role="presentation"><section className="modal new-chat-modal" role="dialog" aria-modal="true" aria-labelledby="new-chat-title">
+      <button className="icon-button modal-close" onClick={() => { setNewChat(false); setSelectedPerson(null); setPeople([]) }} aria-label="Zamknij"><Icon name="close"/></button>
+      <span className="modal-icon"><Icon name="lock"/></span>
+      <h2 id="new-chat-title">Nowa prywatna rozmowa</h2>
+      <p>{authConfig.phoneMatrixLoginEnabled ? 'Wpisz numer telefonu osoby, która ma już konto.' : 'Znajdź osobę, z którą chcesz rozpocząć chronioną rozmowę.'}</p>
+      <form onSubmit={createChat}><label>{authConfig.phoneMatrixLoginEnabled ? 'Numer telefonu' : 'Imię lub nazwa użytkownika'}<input autoFocus required type={authConfig.phoneMatrixLoginEnabled ? 'tel' : 'text'} inputMode={authConfig.phoneMatrixLoginEnabled ? 'tel' : undefined} value={selectedPerson?.name ?? invitee} onChange={e => { setInvitee(e.target.value); setSelectedPerson(null); setPeople([]) }} placeholder={authConfig.phoneMatrixLoginEnabled ? '+48 500 000 000' : 'Wpisz nazwę'}/></label>{!authConfig.phoneMatrixLoginEnabled && people.length > 0 && <div className="people-results">{people.map(person => <button type="button" key={person.userId} onClick={() => setSelectedPerson(person)}><ServerAvatar name={person.name} source={person.avatar} client={client} className="people-avatar" size={80}/><strong>{person.name}</strong></button>)}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : authConfig.phoneMatrixLoginEnabled || selectedPerson ? 'Rozpocznij rozmowę' : 'Znajdź osobę'}</button></form>
+      {authConfig.phoneMatrixLoginEnabled && <section className="friend-invite-panel" aria-labelledby="friend-invite-title">
+        <div className="friend-invite-heading"><span><Icon name="contacts"/></span><div><h3 id="friend-invite-title">Osoba nie ma jeszcze aplikacji?</h3><p>Wyślij jej bezpieczny link do instalacji i szybkiej rejestracji.</p></div></div>
+        {!friendInviteUrl ? <button className="secondary-button friend-invite-create" type="button" disabled={friendInviteBusy} onClick={() => void createFriendInvitation()}>{friendInviteBusy ? 'Tworzenie linku…' : 'Utwórz link zaproszenia'}</button> : <div className="friend-invite-ready">
+          <label>Link zaproszenia<input readOnly value={friendInviteUrl} onFocus={event => event.currentTarget.select()}/></label>
+          <small>Jednorazowy link jest ważny do {formatInviteExpiration(friendInviteExpiresAt)}.</small>
+          <div><button className="primary-button" type="button" onClick={() => void shareFriendInvitation()}>Udostępnij</button><button className="secondary-button" type="button" onClick={() => void copyFriendInvitation()}>Kopiuj</button><button className="text-button" type="button" disabled={friendInviteBusy} onClick={() => void createFriendInvitation()}>Nowy link</button></div>
+        </div>}
+        {friendInviteStatus && <p className="friend-invite-status" role="status">{friendInviteStatus}</p>}
+      </section>}
+    </section></div>}
     {groupDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="group-dialog-title"><button className="icon-button modal-close" onClick={() => setGroupDialog(null)} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="contacts"/></span><h2 id="group-dialog-title">{groupDialog === 'create' ? 'Utwórz nową grupę' : 'Dołącz do grupy'}</h2><p>{groupDialog === 'create' ? 'Nadaj grupie czytelną nazwę. Jako jej twórca zostaniesz jedynym administratorem.' : 'Wpisz krótki kod otrzymany od administratora grupy.'}</p><form onSubmit={submitGroup}>{groupDialog === 'create' ? <label>Nazwa grupy<input autoFocus required minLength={3} maxLength={60} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="np. Zespół projektu"/></label> : <label>Kod grupy<input autoFocus required minLength={8} maxLength={12} autoCapitalize="characters" value={groupInvitation} onChange={event => setGroupInvitation(event.target.value.toUpperCase())} placeholder="np. 7KQF-9M2R"/></label>}<button className="primary-button" disabled={busy}>{busy ? 'Proszę czekać…' : groupDialog === 'create' ? 'Utwórz grupę' : 'Dołącz do grupy'}</button></form></section></div>}
     {roomSettingsDialog && activeRoom && <div className="modal-layer" role="presentation"><section className="modal room-settings-modal" role="dialog" aria-modal="true" aria-labelledby="room-settings-title">
       <button className="icon-button modal-close" onClick={() => setRoomSettingsDialog(false)} aria-label="Zamknij"><Icon name="close"/></button>
