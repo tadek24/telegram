@@ -176,7 +176,7 @@ createServer(async (request, response) => {
   try {
     const { phone, password, accessCode, inviteToken } = await readJson(request)
     const username = phoneLocalpart(phone)
-    if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+    if (typeof password !== 'string' || password.length < 4 || password.length > 128) {
       reply(response, 400, { error: 'WEAK_PASSWORD' })
       return
     }
