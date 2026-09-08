@@ -78,22 +78,23 @@ export async function loginWithDevelopmentPassword(username: string, password: s
   }
 }
 
-async function registerPhoneAccount(phone: string, password: string, accessCode: string) {
+async function registerPhoneAccount(phone: string, password: string, accessCode: string, inviteToken: string) {
   const response = await fetch(`${authConfig.homeserverUrl.replace(/\/$/, '')}/_eprom/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ phone, password, accessCode }),
+    body: JSON.stringify({ phone, password, accessCode, inviteToken }),
   })
   if (response.status === 201) return
   const result = await response.json().catch(() => ({})) as { error?: string }
   if (response.status === 409 || result.error === 'ACCOUNT_EXISTS') throw new Error('INVALID_CREDENTIALS')
   if (result.error === 'WEAK_PASSWORD') throw new Error('WEAK_PASSWORD')
   if (result.error === 'ACCESS_DENIED') throw new Error('ACCESS_DENIED')
+  if (result.error === 'INVITE_INVALID') throw new Error('INVITE_INVALID')
   if (response.status === 429) throw new Error('TOO_MANY_ATTEMPTS')
   throw new Error('REGISTRATION_UNAVAILABLE')
 }
 
-export async function loginWithPhonePassword(phone: string, password: string, accessCode = '', allowRegistration = true): Promise<MatrixClient> {
+export async function loginWithPhonePassword(phone: string, password: string, accessCode = '', allowRegistration = true, inviteToken = ''): Promise<MatrixClient> {
   if (!authConfig.phoneMatrixLoginEnabled || !authConfig.homeserverUrl) throw new Error('PHONE_LOGIN_DISABLED')
   if (!password) throw new Error('INVALID_CREDENTIALS')
   if (matrixClient) return matrixClient
@@ -117,13 +118,45 @@ export async function loginWithPhonePassword(phone: string, password: string, ac
     matrixClient?.stopClient(); matrixClient = null; await clearAuthSession()
     if (typeof error === 'object' && error && 'errcode' in error && error.errcode === 'M_FORBIDDEN') {
       if (allowRegistration) {
-        await registerPhoneAccount(phone, password, accessCode)
+        await registerPhoneAccount(phone, password, accessCode, inviteToken)
         return loginWithPhonePassword(phone, password, '', false)
       }
       throw new Error('INVALID_CREDENTIALS')
     }
     throw error
   }
+}
+
+function registrationApiUrl(path: string) {
+  return `${authConfig.homeserverUrl.replace(/\/$/, '')}/_eprom/${path.replace(/^\//, '')}`
+}
+
+function authorizationHeaders(client: MatrixClient) {
+  const token = client.getAccessToken()
+  if (!token) throw new Error('CLIENT_NOT_READY')
+  return { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+}
+
+export async function createRegistrationInvite(client: MatrixClient) {
+  const response = await fetch(registrationApiUrl('invites'), {
+    method: 'POST',
+    headers: authorizationHeaders(client),
+    body: '{}',
+  })
+  const result = await response.json().catch(() => ({})) as { token?: string, expiresAt?: number, error?: string }
+  if (!response.ok || !result.token || !result.expiresAt) throw new Error(result.error || 'INVITE_UNAVAILABLE')
+  return { token: result.token, expiresAt: result.expiresAt }
+}
+
+export async function claimRegistrationInvite(client: MatrixClient, inviteToken: string) {
+  const response = await fetch(registrationApiUrl('invites/claim'), {
+    method: 'POST',
+    headers: authorizationHeaders(client),
+    body: JSON.stringify({ inviteToken }),
+  })
+  const result = await response.json().catch(() => ({})) as { inviterUserId?: string, error?: string }
+  if (!response.ok || !result.inviterUserId) throw new Error(result.error || 'INVITE_INVALID')
+  return result.inviterUserId
 }
 
 export async function loginWithSsoToken(token: string) {
