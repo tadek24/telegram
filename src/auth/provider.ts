@@ -10,6 +10,7 @@ export const AUTH_SESSION_KEY = 'app-auth-session'
 const AUTH_DATABASE_NAME = 'eprom-secure-session'
 const AUTH_DATABASE_VERSION = 1
 const AUTH_STORE = 'sessions'
+const AUTH_DEVICE_KEY_PREFIX = 'app-auth-device:'
 
 export type AuthSession = {
   accessToken: string
@@ -63,6 +64,42 @@ async function readPersistentSession() {
   } finally {
     database.close()
   }
+}
+
+function rememberedDeviceKey(userId: string) {
+  return `${AUTH_DEVICE_KEY_PREFIX}${userId.trim().toLowerCase()}`
+}
+
+export async function readRememberedDeviceId(userId: string) {
+  if (!('indexedDB' in window) || !userId.trim()) return ''
+  try {
+    const database = await openAuthDatabase()
+    try {
+      const transaction = database.transaction(AUTH_STORE, 'readonly')
+      const request = transaction.objectStore(AUTH_STORE).get(rememberedDeviceKey(userId))
+      const value = await new Promise<unknown>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error ?? new Error('AUTH_DATABASE_READ_FAILED'))
+      })
+      return typeof value === 'string' ? value : ''
+    } finally {
+      database.close()
+    }
+  } catch { return '' }
+}
+
+export async function rememberDeviceId(userId: string, deviceId: string) {
+  if (!('indexedDB' in window) || !userId.trim() || !deviceId.trim()) return
+  try {
+    const database = await openAuthDatabase()
+    try {
+      const transaction = database.transaction(AUTH_STORE, 'readwrite')
+      transaction.objectStore(AUTH_STORE).put(deviceId.trim(), rememberedDeviceKey(userId))
+      await transactionComplete(transaction)
+    } finally {
+      database.close()
+    }
+  } catch { /* Brak zapisu nie może blokować logowania. */ }
 }
 
 export async function readAuthSession(): Promise<AuthSession | null> {
