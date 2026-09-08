@@ -38,14 +38,28 @@ import {
   startAuthenticatedClient,
 } from './matrix/client'
 import { CallOverlay, useMatrixCalls } from './matrix/calls'
+import {
+  MiniCalendar,
+  OrganizerWorkspace,
+  dueReminderEntries,
+  eventShareText,
+  localDateKey,
+  monthCursorFor,
+  noteShareText,
+  type CalendarEntry,
+  type CalendarEntryInput,
+  type OrganizerNote,
+  type OrganizerNoteInput,
+  type OrganizerView,
+} from './organizer'
 
 type AppStatus = 'restoring' | 'logged-out' | 'syncing' | 'ready' | 'offline' | 'demo'
-type IconName = 'search' | 'chat' | 'contacts' | 'files' | 'history' | 'archive' | 'trash' | 'check' | 'download' | 'settings' | 'logout' | 'send' | 'plus' | 'menu' | 'close' | 'lock' | 'attach' | 'camera' | 'image' | 'file' | 'phone' | 'video'
+type IconName = 'search' | 'chat' | 'contacts' | 'files' | 'history' | 'archive' | 'trash' | 'check' | 'download' | 'settings' | 'logout' | 'send' | 'plus' | 'menu' | 'close' | 'lock' | 'attach' | 'camera' | 'image' | 'file' | 'phone' | 'video' | 'note' | 'calendar'
 type ChatTheme = 'system' | 'light' | 'dark' | 'blue'
-type WorkspaceView = 'chats' | 'archived' | 'telegram'
+type WorkspaceView = 'chats' | 'archived' | 'telegram' | OrganizerView
 type ServerContact = { id: string, name: string, phone: string, avatar?: string, roomId?: string }
 type ServerProfile = { name: string, about: string, avatar?: string }
-type ServerLocalSettings = { version: 1, contacts: ServerContact[], about: string, theme: ChatTheme, pushKey?: string, archivedRoomIds?: string[] }
+type ServerLocalSettings = { version: 1, contacts: ServerContact[], about: string, theme: ChatTheme, pushKey?: string, pushEnabled?: boolean, archivedRoomIds?: string[], organizerNotes?: OrganizerNote[], calendarEntries?: CalendarEntry[] }
 type GroupInviteState = { active?: boolean, code?: string, alias?: string }
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -99,6 +113,8 @@ function Icon({ name }: { name: IconName }) {
     file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></>,
     phone: <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.9.6 2.9.7a2 2 0 0 1 1.7 2Z"/>,
     video: <><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3Z"/></>,
+    note: <><path d="M5 3h11l3 3v15H5z"/><path d="M9 10h6M9 14h6M9 18h4M16 3v4h4"/></>,
+    calendar: <><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></>,
   }
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
 }
@@ -684,6 +700,7 @@ export default function App() {
   const [editingContactId, setEditingContactId] = useState('')
   const [contactsDialog, setContactsDialog] = useState(false)
   const [accountDialog, setAccountDialog] = useState(false)
+  const [preferencesDialog, setPreferencesDialog] = useState(false)
   const [roomSettingsDialog, setRoomSettingsDialog] = useState(false)
   const [roomSettingsName, setRoomSettingsName] = useState('')
   const [roomSettingsAvatar, setRoomSettingsAvatar] = useState('')
@@ -698,12 +715,20 @@ export default function App() {
   const [filesDialog, setFilesDialog] = useState(false)
   const [mediaLoading, setMediaLoading] = useState(false)
   const [mediaLoadError, setMediaLoadError] = useState('')
-  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('chats')
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(() => new URLSearchParams(window.location.search).get('view') === 'calendar' ? 'calendar' : 'chats')
   const [archivedRoomIds, setArchivedRoomIds] = useState<string[]>([])
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([])
   const [theme, setTheme] = useState<ChatTheme>('system')
+  const [organizerNotes, setOrganizerNotes] = useState<OrganizerNote[]>([])
+  const [calendarEntries, setCalendarEntries] = useState<CalendarEntry[]>([])
+  const [organizerQuery, setOrganizerQuery] = useState('')
+  const [selectedOrganizerDay, setSelectedOrganizerDay] = useState(() => localDateKey(new Date()))
+  const [organizerMonth, setOrganizerMonth] = useState(() => monthCursorFor())
+  const [organizerNotice, setOrganizerNotice] = useState('')
+  const [reminderPermission, setReminderPermission] = useState<NotificationPermission | 'unsupported'>(() => typeof Notification === 'undefined' ? 'unsupported' : Notification.permission)
   const [pushKey, setPushKey] = useState('')
+  const [pushEnabledPreference, setPushEnabledPreference] = useState(false)
   const [pushBusy, setPushBusy] = useState(false)
   const [pushNotice, setPushNotice] = useState('')
   const [settingsHydrated, setSettingsHydrated] = useState(false)
@@ -763,7 +788,13 @@ export default function App() {
     if (!client) return
     const userId = client.getUserId()
     if (!userId) return
-    Promise.all([client.getProfileInfo(userId), readLocalAccount<ServerLocalSettings>(userId)]).then(([info, local]) => {
+    let cancelled = false
+    setSettingsHydrated(false)
+    Promise.all([
+      client.getProfileInfo(userId).catch((): { displayname?: string, avatar_url?: string } => ({})),
+      readLocalAccount<ServerLocalSettings>(userId).catch(() => null),
+    ]).then(async ([info, local]) => {
+      if (cancelled) return
       const remoteName = info.displayname?.trim()
       setProfile({
         name: remoteName && !/^phone_\d+$/.test(remoteName) && !remoteName.startsWith('@') ? remoteName : 'Użytkownik',
@@ -771,27 +802,74 @@ export default function App() {
         avatar: info.avatar_url || undefined,
       })
       if (local?.version === 1) {
-        setContacts(local.contacts)
-        setTheme(local.theme)
+        setContacts(Array.isArray(local.contacts) ? local.contacts : [])
+        setTheme(['system', 'light', 'dark', 'blue'].includes(local.theme) ? local.theme : 'system')
         setArchivedRoomIds(Array.isArray(local.archivedRoomIds) ? local.archivedRoomIds : [])
-        const savedPushKey = local.pushKey || ''
-        if (savedPushKey && pushPermission() === 'granted') {
-          setPushKey(savedPushKey)
-          void browserHasPushSubscription().then(active => { if (!active) setPushKey('') }).catch(() => setPushKey(''))
+        setOrganizerNotes(Array.isArray(local.organizerNotes) ? local.organizerNotes : [])
+        setCalendarEntries(Array.isArray(local.calendarEntries) ? local.calendarEntries : [])
+      }
+      const savedPushKey = local?.pushKey || ''
+      const permissionGranted = pushPermission() === 'granted'
+      const hasSubscription = permissionGranted
+        ? await browserHasPushSubscription().catch(() => false)
+        : false
+      const wantsPush = typeof local?.pushEnabled === 'boolean'
+        ? local.pushEnabled
+        : Boolean(savedPushKey || hasSubscription)
+      if (cancelled) return
+      setPushEnabledPreference(wantsPush)
+      setPushKey('')
+      if (wantsPush && permissionGranted) {
+        setPushBusy(true)
+        try {
+          const restoredPushKey = await enablePushNotifications(client, authConfig.homeserverUrl)
+          if (!cancelled) setPushKey(restoredPushKey)
+        } catch (reason) {
+          if (import.meta.env.DEV) console.error(reason)
+          if (!cancelled && savedPushKey && hasSubscription) setPushKey(savedPushKey)
+        } finally {
+          if (!cancelled) setPushBusy(false)
         }
       }
-      setSettingsHydrated(true)
-    }).catch(reason => { if (import.meta.env.DEV) console.error(reason); setSettingsHydrated(true) })
+      if (!cancelled) setSettingsHydrated(true)
+    }).catch(reason => { if (import.meta.env.DEV) console.error(reason); if (!cancelled) setSettingsHydrated(true) })
+    return () => { cancelled = true }
   }, [client])
 
   useEffect(() => {
     const userId = client?.getUserId()
     if (!userId || !settingsHydrated) return
     const timer = window.setTimeout(() => {
-      void saveLocalAccount<ServerLocalSettings>(userId, { version: 1, contacts, about: profile.about, theme, pushKey, archivedRoomIds })
+      void saveLocalAccount<ServerLocalSettings>(userId, { version: 1, contacts, about: profile.about, theme, pushKey, pushEnabled: pushEnabledPreference, archivedRoomIds, organizerNotes, calendarEntries })
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [archivedRoomIds, client, contacts, profile.about, pushKey, settingsHydrated, theme])
+  }, [archivedRoomIds, calendarEntries, client, contacts, organizerNotes, profile.about, pushEnabledPreference, pushKey, settingsHydrated, theme])
+
+  useEffect(() => {
+    if (!settingsHydrated || calendarEntries.length === 0) return
+    const checkReminders = () => {
+      const due = dueReminderEntries(calendarEntries)
+      if (due.length === 0) return
+      const remindedAt = Date.now()
+      const dueIds = new Set(due.map(entry => entry.id))
+      setCalendarEntries(current => current.map(entry => dueIds.has(entry.id) ? { ...entry, remindedAt } : entry))
+      setOrganizerNotice(due.length === 1 ? 'Masz zaplanowane wydarzenie. Otwórz kalendarz, aby zobaczyć szczegóły.' : `Masz ${due.length} zaplanowane wydarzenia. Otwórz kalendarz, aby zobaczyć szczegóły.`)
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+      const body = due.length === 1 ? 'Masz zaplanowane wydarzenie. Szczegóły są bezpiecznie zapisane w aplikacji.' : `Masz ${due.length} zaplanowane wydarzenia. Szczegóły są bezpiecznie zapisane w aplikacji.`
+      if ('serviceWorker' in navigator) {
+        void navigator.serviceWorker.ready.then(registration => registration.showNotification('Przypomnienie z kalendarza', {
+          body,
+          icon: '/icons/eprom-icon-192.png',
+          badge: '/icons/eprom-icon-192.png',
+          tag: 'organizer-calendar-reminder',
+          data: { url: '/?view=calendar' },
+        })).catch(() => undefined)
+      } else new Notification('Przypomnienie z kalendarza', { body, tag: 'organizer-calendar-reminder' })
+    }
+    checkReminders()
+    const timer = window.setInterval(checkReminders, 30_000)
+    return () => window.clearInterval(timer)
+  }, [calendarEntries, settingsHydrated])
 
   useEffect(() => {
     if (!client) return
@@ -1284,6 +1362,65 @@ export default function App() {
     setDrawer(false)
   }
 
+  function saveOrganizerNote(input: OrganizerNoteInput) {
+    const now = Date.now()
+    setOrganizerNotes(current => {
+      const existing = input.id ? current.find(note => note.id === input.id) : undefined
+      const note: OrganizerNote = {
+        id: existing?.id ?? crypto.randomUUID(),
+        title: input.title,
+        body: input.body,
+        tags: [...new Set(input.tags.map(tag => tag.trim()).filter(Boolean))].slice(0, 20),
+        pinned: input.pinned,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      return existing ? current.map(item => item.id === existing.id ? note : item) : [note, ...current]
+    })
+    setOrganizerNotice('Notatka została zapisana prywatnie na tym urządzeniu.')
+  }
+
+  function saveCalendarEntry(input: CalendarEntryInput) {
+    const now = Date.now()
+    setCalendarEntries(current => {
+      const existing = input.id ? current.find(entry => entry.id === input.id) : undefined
+      const entry: CalendarEntry = {
+        id: existing?.id ?? crypto.randomUUID(),
+        title: input.title,
+        details: input.details,
+        location: input.location,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        reminderMinutes: input.reminderMinutes,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      return existing ? current.map(item => item.id === existing.id ? entry : item) : [...current, entry]
+    })
+    setOrganizerNotice('Wydarzenie zostało zapisane w prywatnym kalendarzu.')
+  }
+
+  async function shareOrganizerItem(kind: OrganizerView, id: string, roomId: string) {
+    if (!client) return
+    const body = kind === 'notes'
+      ? organizerNotes.find(note => note.id === id) && noteShareText(organizerNotes.find(note => note.id === id)!)
+      : calendarEntries.find(entry => entry.id === id) && eventShareText(calendarEntries.find(entry => entry.id === id)!)
+    if (!body) return
+    await client.sendTextMessage(roomId, body)
+    setOrganizerNotice('Kopia została wysłana do wybranej szyfrowanej rozmowy.')
+  }
+
+  async function enableOrganizerReminders() {
+    if (typeof Notification === 'undefined') {
+      setReminderPermission('unsupported')
+      setOrganizerNotice('Ta przeglądarka nie obsługuje powiadomień kalendarza.')
+      return
+    }
+    const permission = await Notification.requestPermission()
+    setReminderPermission(permission)
+    setOrganizerNotice(permission === 'granted' ? 'Przypomnienia kalendarza są włączone na tym urządzeniu.' : 'Powiadomienia nie zostały włączone. Możesz zmienić tę decyzję w ustawieniach przeglądarki.')
+  }
+
   function toggleRoomSelection(roomId: string) {
     setSelectedRoomIds(current => current.includes(roomId) ? current.filter(id => id !== roomId) : [...current, roomId])
   }
@@ -1408,10 +1545,12 @@ export default function App() {
       if (pushKey) {
         await disablePushNotifications(client, authConfig.homeserverUrl, pushKey)
         setPushKey('')
+        setPushEnabledPreference(false)
         setPushNotice('Powiadomienia zostały wyłączone na tym urządzeniu.')
       } else {
         const nextPushKey = await enablePushNotifications(client, authConfig.homeserverUrl)
         setPushKey(nextPushKey)
+        setPushEnabledPreference(true)
         setPushNotice('Powiadomienia są włączone na tym urządzeniu.')
       }
     } catch (reason) {
@@ -1461,7 +1600,7 @@ export default function App() {
     if (client && pushKey) {
       try {
         await disablePushNotifications(client, authConfig.homeserverUrl, pushKey)
-        if (userId) await saveLocalAccount<ServerLocalSettings>(userId, { version: 1, contacts, about: profile.about, theme, pushKey: '' })
+        if (userId) await saveLocalAccount<ServerLocalSettings>(userId, { version: 1, contacts, about: profile.about, theme, pushKey: '', pushEnabled: pushEnabledPreference, archivedRoomIds, organizerNotes, calendarEntries })
       } catch (reason) { if (import.meta.env.DEV) console.error(reason) }
       setPushKey('')
     }
@@ -1486,17 +1625,42 @@ export default function App() {
         <button className={workspaceView === 'chats' ? 'active' : ''} onClick={() => openWorkspaceView('chats')}><Icon name="chat"/><span>Wiadomości</span><b>{allJoinedRooms.filter(room => !archivedRoomIds.includes(room.roomId)).length}</b></button>
         <button className={workspaceView === 'telegram' ? 'active telegram-nav-button' : 'telegram-nav-button'} onClick={() => openWorkspaceView('telegram')}><Icon name="history"/><span>Archiwum Telegrama</span></button>
         <button className={workspaceView === 'archived' ? 'active' : ''} onClick={() => openWorkspaceView('archived')}><Icon name="archive"/><span>Zarchiwizowane</span><b>{allJoinedRooms.filter(room => archivedRoomIds.includes(room.roomId)).length}</b></button>
+        <span className="nav-label">Organizer</span>
+        <button className={workspaceView === 'notes' ? 'active' : ''} onClick={() => openWorkspaceView('notes')}><Icon name="note"/><span>Notatki</span><b>{organizerNotes.length}</b></button>
+        <button className={workspaceView === 'calendar' ? 'active' : ''} onClick={() => openWorkspaceView('calendar')}><Icon name="calendar"/><span>Kalendarz</span><b>{calendarEntries.length}</b></button>
         <span className="nav-label">Narzędzia</span>
         <button onClick={() => { setContactsDialog(true); setDrawer(false) }}><Icon name="contacts"/><span>Kontakty</span></button>
-        <button onClick={openServerAccountSettings}><Icon name="settings"/><span>Ustawienia</span></button>
+        <button onClick={() => { setPreferencesDialog(true); setDrawer(false) }}><Icon name="settings"/><span>Ustawienia</span></button>
       </nav>
+      <MiniCalendar events={calendarEntries} onOpen={day => { setSelectedOrganizerDay(day); setOrganizerMonth(monthCursorFor(new Date(`${day}T12:00`).getTime())); openWorkspaceView('calendar') }}/>
       <div className="sidebar-bottom">
         <p><span className={`status-dot ${status === 'ready' ? 'ready' : ''}`}/><strong>{status === 'offline' ? 'Brak połączenia' : status === 'syncing' ? 'Synchronizacja…' : 'Połączono'}</strong><small>{status === 'offline' ? 'Wiadomości mogą być nieaktualne' : 'Wiadomości są aktualne'}</small></p>
         <button className="logout-button" onClick={logout} disabled={busy}><Icon name="logout"/>Wyloguj się</button>
       </div>
     </aside>
 
-    {workspaceView === 'telegram' ? <TelegramArchiveWorkspace ownerId={myUserId} onOpenMenu={() => setDrawer(true)} onNewConversation={() => { openWorkspaceView('chats'); setNewChat(true) }}/> : <>
+    {workspaceView === 'telegram' ? <TelegramArchiveWorkspace ownerId={myUserId} onOpenMenu={() => setDrawer(true)} onNewConversation={() => { openWorkspaceView('chats'); setNewChat(true) }}/> : workspaceView === 'notes' || workspaceView === 'calendar' ? <OrganizerWorkspace
+      view={workspaceView}
+      notes={organizerNotes}
+      events={calendarEntries}
+      rooms={allJoinedRooms.map(room => ({ id: room.roomId, name: displayRoomName(room) }))}
+      query={organizerQuery}
+      selectedDay={selectedOrganizerDay}
+      monthCursor={organizerMonth}
+      notice={organizerNotice}
+      notificationPermission={reminderPermission}
+      onView={openWorkspaceView}
+      onQuery={setOrganizerQuery}
+      onSelectDay={day => { setSelectedOrganizerDay(day); setOrganizerMonth(monthCursorFor(new Date(`${day}T12:00`).getTime())) }}
+      onMonthCursor={setOrganizerMonth}
+      onOpenMenu={() => setDrawer(true)}
+      onSaveNote={saveOrganizerNote}
+      onDeleteNote={id => { setOrganizerNotes(current => current.filter(note => note.id !== id)); setOrganizerNotice('Notatka została usunięta z tego urządzenia.') }}
+      onSaveEvent={saveCalendarEntry}
+      onDeleteEvent={id => { setCalendarEntries(current => current.filter(entry => entry.id !== id)); setOrganizerNotice('Wydarzenie zostało usunięte z kalendarza.') }}
+      onShare={shareOrganizerItem}
+      onEnableReminders={enableOrganizerReminders}
+    /> : <>
     <section className="rooms-panel">
       <header className="rooms-header">
         <button className="mobile-logo" onClick={() => setDrawer(true)} aria-label="Otwórz menu"><BrandIcon /></button>
@@ -1583,6 +1747,14 @@ export default function App() {
       <button className="icon-button modal-close" onClick={() => { setAccountDialog(false); setProfileAvatarFile(null) }} aria-label="Zamknij"><Icon name="close"/></button>
       <span className="modal-icon"><Icon name="settings"/></span><h2 id="server-account-title">Ustawienia konta</h2><p>Nazwa i avatar są widoczne dla rozmówców. Opis i wybrany motyw pozostają w tej przeglądarce.</p>
       <form onSubmit={saveServerAccountSettings}><div className="avatar-editor"><ServerAvatar name={accountDraft.name || 'Użytkownik'} source={accountDraft.avatar} client={client}/><label className="secondary-button">Zmień avatar<input type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) void selectServerProfileAvatar(file); event.target.value = '' }}/></label>{accountDraft.avatar && <button type="button" className="text-button" onClick={() => { setProfileAvatarFile(null); setAccountDraft(current => ({ ...current, avatar: undefined })) }}>Usuń zdjęcie</button>}</div><label>Nazwa wyświetlana<input required maxLength={60} value={accountDraft.name} onChange={event => setAccountDraft(current => ({ ...current, name: event.target.value }))}/></label><label>Opis profilu<input maxLength={100} value={accountDraft.about} onChange={event => setAccountDraft(current => ({ ...current, about: event.target.value }))} placeholder="np. Dostępny"/></label><label>Motyw wiadomości<select value={theme} onChange={event => setTheme(event.target.value as ChatTheme)}><option value="system">Jak w urządzeniu</option><option value="light">Jasny kremowy</option><option value="dark">Ciemny bursztynowy</option><option value="blue">Złoto-pomarańczowy</option></select></label><section className="push-settings"><div><strong>Powiadomienia na tym urządzeniu</strong><small>{pushKey && pushPermission() === 'granted' ? 'Włączone — telefon poinformuje Cię o nowej wiadomości.' : pushNotificationsSupported() ? 'Włącz je osobno na każdym telefonie lub komputerze.' : 'Na iPhonie najpierw dodaj aplikację do ekranu początkowego.'}</small></div><button type="button" className={pushKey ? 'secondary-button' : 'primary-button'} disabled={pushBusy} onClick={() => void togglePushNotifications()}>{pushBusy ? 'Proszę czekać…' : pushKey ? 'Wyłącz powiadomienia' : 'Włącz powiadomienia'}</button>{pushNotice && <p className={pushKey ? 'success-banner' : 'push-notice'} role="status">{pushNotice}</p>}</section><p className="local-storage-note"><Icon name="lock"/> Powiadomienie nie pokazuje treści rozmowy. PIN nie jest tu wyświetlany ani zapisywany.</p><button className="primary-button" disabled={busy}>{busy ? 'Zapisywanie…' : 'Zapisz ustawienia'}</button></form>
+    </section></div>}
+    {preferencesDialog && <div className="modal-layer" role="presentation"><section className="modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title">
+      <button className="icon-button modal-close" type="button" onClick={() => setPreferencesDialog(false)} aria-label="Zamknij"><Icon name="close"/></button>
+      <span className="modal-icon"><Icon name="settings"/></span><h2 id="preferences-title">Ustawienia</h2><p>Wybierz wygląd aplikacji. Zmiana jest widoczna od razu i zapisuje się automatycznie na tym urządzeniu.</p>
+      <fieldset className="theme-picker"><legend>Motyw aplikacji</legend>
+        {([['system', 'Systemowy', 'Dopasowuje się do urządzenia'], ['light', 'Jasny', 'Spokojny i czytelny'], ['dark', 'Ciemny', 'Wygodny wieczorem'], ['blue', 'Ciepły', 'Piaskowe, delikatne akcenty']] as const).map(([value, label, description]) => <label className={theme === value ? 'selected' : ''} key={value}><input type="radio" name="chat-theme" value={value} checked={theme === value} onChange={() => setTheme(value)}/><span className={`theme-preview ${value}`}><i/><i/><i/></span><span><strong>{label}</strong><small>{description}</small></span><b><Icon name="check"/></b></label>)}
+      </fieldset>
+      <button className="secondary-button preferences-profile-button" type="button" onClick={() => { setPreferencesDialog(false); openServerAccountSettings() }}>Profil i powiadomienia</button>
     </section></div>}
     {historyDialog && <div className="modal-layer" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="server-history-title"><button className="icon-button modal-close" onClick={() => setHistoryDialog(false)} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="history"/></span><h2 id="server-history-title">Historia rozmów</h2><p>Rozmowy są synchronizowane z Twoim prywatnym serwerem.</p><div className="dialog-room-list">{allJoinedRooms.length === 0 && <p className="empty-dialog-note">Historia jest jeszcze pusta.</p>}{allJoinedRooms.map(room => { const contact = contactForRoom(room); return <button type="button" key={room.roomId} onClick={() => { setActiveRoomId(room.roomId); setHistoryDialog(false) }}>{contact ? <DemoAvatar name={contact.name} avatar={contact.avatar}/> : <RoomAvatar room={room} client={client}/>}<span><strong>{displayRoomName(room)}</strong><small>{lastMessage(room)}</small></span><time>{roomTimestamp(room) ? formatTime(roomTimestamp(room)) : ''}</time></button> })}</div></section></div>}
     {filesDialog && activeRoom && <div className="modal-layer" role="presentation"><section className="modal room-media-modal" role="dialog" aria-modal="true" aria-labelledby="server-files-title"><button className="icon-button modal-close" onClick={() => setFilesDialog(false)} aria-label="Zamknij"><Icon name="close"/></button><span className="modal-icon"><Icon name="files"/></span><h2 id="server-files-title">Pliki i media</h2><p className="room-media-context">Załączniki wyłącznie z rozmowy <strong>„{displayRoomName(activeRoom)}”</strong>.</p>{mediaLoading && <p className="media-dialog-status" role="status"><span className="spinner"/> Pobieranie starszych załączników…</p>}{mediaLoadError && <p className="media-dialog-warning" role="status">{mediaLoadError}</p>}{!mediaLoading && mediaItems.length === 0 && <p className="empty-dialog-note">W tej rozmowie nie ma jeszcze żadnych plików ani mediów.</p>}{visualMediaItems.length > 0 && <section className="room-media-section"><h3>Zdjęcia i filmy <span>{visualMediaItems.length}</span></h3><div className="room-media-grid">{visualMediaItems.map(({ event, content, name }) => <article className="room-media-card" key={event.getId() ?? `${activeRoom.roomId}-${event.getTs()}`}><MatrixMedia content={content} client={client!}/><div className="room-media-card-info"><strong>{name}</strong><time>{formatTime(event.getTs())}</time></div></article>)}</div></section>}{fileMediaItems.length > 0 && <section className="room-media-section"><h3>Pliki i nagrania <span>{fileMediaItems.length}</span></h3><div className="room-file-list">{fileMediaItems.map(({ event, content }) => <article className="room-file-row" key={event.getId() ?? `${activeRoom.roomId}-${event.getTs()}`}><MatrixMedia content={content} client={client!}/><time>{formatTime(event.getTs())}</time></article>)}</div></section>}</section></div>}
