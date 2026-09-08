@@ -2,7 +2,7 @@ import { Attachment } from '@matrix-org/matrix-sdk-crypto-wasm'
 import { createClient, EventType, MsgType, Preset, type MatrixClient } from 'matrix-js-sdk'
 import type { RoomMessageEventContent } from 'matrix-js-sdk/lib/@types/events'
 import { IndexedDBStore } from 'matrix-js-sdk/lib/store/indexeddb'
-import { clearAuthSession, readAuthSession, saveAuthSession, SessionTokenRefresher, type AuthSession } from '../auth/provider'
+import { clearAuthSession, readAuthSession, readRememberedDeviceId, rememberDeviceId, saveAuthSession, SessionTokenRefresher, type AuthSession } from '../auth/provider'
 import { authConfig } from './config'
 import { phoneToLocalpart, phoneToUserId } from './phone-identity'
 
@@ -20,6 +20,90 @@ function cryptoDatabasePrefix(session: AuthSession) {
 function syncDatabaseName(session: AuthSession) {
   const server = new URL(session.homeserverUrl).host
   return `eprom-sync-${server}-${session.userId}-${session.deviceId}`.replace(/[^a-z0-9_-]/gi, '_')
+}
+
+function cryptoDatabaseStem(userId: string) {
+  const server = new URL(authConfig.homeserverUrl).host
+  return `eprom-${server}-${userId}-`.replace(/[^a-z0-9_-]/gi, '_')
+}
+
+async function indexedDatabaseRecordCount(name: string) {
+  return await new Promise<number>((resolve) => {
+    const request = indexedDB.open(name)
+    request.onerror = () => resolve(0)
+    request.onsuccess = () => {
+      const database = request.result
+      const stores = Array.from(database.objectStoreNames)
+      if (stores.length === 0) { database.close(); resolve(0); return }
+      try {
+        const transaction = database.transaction(stores, 'readonly')
+        let total = 0
+        let remaining = stores.length
+        const finish = () => { remaining -= 1; if (remaining === 0) { database.close(); resolve(total) } }
+        stores.forEach(storeName => {
+          const count = transaction.objectStore(storeName).count()
+          count.onsuccess = () => { total += count.result; finish() }
+          count.onerror = finish
+        })
+        transaction.onabort = () => { database.close(); resolve(0) }
+      } catch { database.close(); resolve(0) }
+    }
+  })
+}
+
+async function localCryptoDeviceIds(userId: string) {
+  if (!('indexedDB' in window) || typeof indexedDB.databases !== 'function') return []
+  try {
+    const stem = cryptoDatabaseStem(userId)
+    const suffix = '::matrix-sdk-crypto'
+    return (await indexedDB.databases())
+      .map(database => database.name ?? '')
+      .filter(name => name.startsWith(stem) && name.endsWith(suffix))
+      .map(name => name.slice(stem.length, -suffix.length))
+      .filter(Boolean)
+  } catch { return [] }
+}
+
+async function bestLocalCryptoDeviceId(userId: string) {
+  const deviceIds = await localCryptoDeviceIds(userId)
+  try {
+    const stem = cryptoDatabaseStem(userId)
+    const suffix = '::matrix-sdk-crypto'
+    const candidates = await Promise.all(deviceIds.map(async deviceId => ({
+      deviceId,
+      score: await indexedDatabaseRecordCount(`${stem}${deviceId}${suffix}`),
+    })))
+    return candidates.sort((left, right) => right.score - left.score)[0]?.deviceId ?? ''
+  } catch { return '' }
+}
+
+async function recoverLocalRoomKeys(session: AuthSession, targetClient: MatrixClient) {
+  const deviceIds = await localCryptoDeviceIds(session.userId)
+  const targetCrypto = targetClient.getCrypto()
+  if (!targetCrypto) return
+  for (const deviceId of deviceIds) {
+    if (!deviceId || deviceId === session.deviceId) continue
+    const recoveryClient = createClient({
+      baseUrl: session.homeserverUrl,
+      userId: session.userId,
+      deviceId,
+    })
+    try {
+      await recoveryClient.initRustCrypto({ cryptoDatabasePrefix: cryptoDatabasePrefix({ ...session, deviceId }) })
+      const recoveryCrypto = recoveryClient.getCrypto()
+      if (!recoveryCrypto) continue
+      const exportedKeys = await recoveryCrypto.exportRoomKeysAsJson()
+      if (exportedKeys !== '[]') await targetCrypto.importRoomKeysAsJson(exportedKeys)
+    } catch (error) {
+      if (import.meta.env.DEV) console.warn('Nie udało się połączyć jednego ze starszych magazynów kluczy.', error)
+    } finally {
+      recoveryClient.stopClient()
+    }
+  }
+}
+
+async function preferredDeviceId(userId: string) {
+  return await readRememberedDeviceId(userId) || await bestLocalCryptoDeviceId(userId)
 }
 
 async function startFromSession(session: AuthSession) {
@@ -47,6 +131,10 @@ async function startFromSession(session: AuthSession) {
   try {
     if (syncStore) await syncStore.startup()
     await matrixClient.initRustCrypto({ cryptoDatabasePrefix: cryptoDatabasePrefix(session) })
+    await recoverLocalRoomKeys(session, matrixClient)
+    await rememberDeviceId(session.userId, session.deviceId)
+    const localpart = session.userId.startsWith('@') ? session.userId.slice(1).split(':')[0] : ''
+    if (localpart) await rememberDeviceId(localpart, session.deviceId)
     await matrixClient.startClient({ initialSyncLimit: 30 })
     return matrixClient
   } catch (error) {
@@ -67,8 +155,11 @@ export async function loginWithDevelopmentPassword(username: string, password: s
   if (matrixClient) return matrixClient
   matrixClient = createClient({ baseUrl: authConfig.homeserverUrl })
   try {
-    const result = await matrixClient.login('m.login.password', { user: username.trim(), password })
+    const normalizedUsername = username.trim()
+    const rememberedDeviceId = normalizedUsername.startsWith('@') ? await preferredDeviceId(normalizedUsername) : ''
+    const result = await matrixClient.login('m.login.password', { user: normalizedUsername, password, device_id: rememberedDeviceId || undefined })
     const session: AuthSession = { accessToken: result.access_token, userId: result.user_id, deviceId: result.device_id, homeserverUrl: authConfig.homeserverUrl }
+    await rememberDeviceId(session.userId, session.deviceId)
     await saveAuthSession(session)
     matrixClient.stopClient(); matrixClient = null
     return await startFromSession(session)
@@ -100,17 +191,34 @@ export async function loginWithPhonePassword(phone: string, password: string, ac
   if (matrixClient) return matrixClient
   matrixClient = createClient({ baseUrl: authConfig.homeserverUrl })
   try {
+    const localpart = phoneToLocalpart(phone)
+    const rememberedDeviceId = await readRememberedDeviceId(localpart)
     const result = await matrixClient.login('m.login.password', {
-      identifier: { type: 'm.id.user', user: phoneToLocalpart(phone) },
+      identifier: { type: 'm.id.user', user: localpart },
       password,
+      device_id: rememberedDeviceId || undefined,
       initial_device_display_name: 'Komunikator',
     })
+    const recoverableDeviceId = rememberedDeviceId || await readRememberedDeviceId(result.user_id) || await bestLocalCryptoDeviceId(result.user_id)
+    let finalResult = result
+    if (recoverableDeviceId && recoverableDeviceId !== result.device_id) {
+      await matrixClient.logout(true)
+      matrixClient = createClient({ baseUrl: authConfig.homeserverUrl })
+      finalResult = await matrixClient.login('m.login.password', {
+        identifier: { type: 'm.id.user', user: localpart },
+        password,
+        device_id: recoverableDeviceId,
+        initial_device_display_name: 'Komunikator',
+      })
+    }
     const session: AuthSession = {
-      accessToken: result.access_token,
-      userId: result.user_id,
-      deviceId: result.device_id,
+      accessToken: finalResult.access_token,
+      userId: finalResult.user_id,
+      deviceId: finalResult.device_id,
       homeserverUrl: authConfig.homeserverUrl,
     }
+    await rememberDeviceId(session.userId, session.deviceId)
+    await rememberDeviceId(localpart, session.deviceId)
     await saveAuthSession(session)
     matrixClient.stopClient(); matrixClient = null
     return await startFromSession(session)
@@ -311,6 +419,12 @@ export async function sendMediaAttachment(
 export async function logoutMessaging() {
   const client = matrixClient
   matrixClient = null
-  try { client?.stopClient(); if (client) await client.logout(true) }
+  try {
+    if (client) {
+      await client.store.save(true).catch(() => undefined)
+      client.stopClient()
+      await client.logout(true)
+    }
+  }
   finally { await clearAuthSession() }
 }
